@@ -18,12 +18,16 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from crawler.config import DB_PATH
+from crawler.adapters.config import Settings
+
+DB_PATH = Settings.from_env().db_path
 
 
 def main():
     p = argparse.ArgumentParser(description="采样统计爬取速率与剩余时间估算")
-    p.add_argument("--table", choices=["articles", "boards", "issues"], default="articles")
+    p.add_argument(
+        "--table", choices=["articles", "boards", "issues"], default="articles"
+    )
     p.add_argument("--status", default="done", help="统计的状态(默认 done)")
     p.add_argument("--seconds", type=int, default=60, help="采样时长,秒(默认 60)")
     args = p.parse_args()
@@ -39,7 +43,9 @@ def main():
     con.close()
 
     rate = (n2 - n1) / args.seconds
-    print(f"{args.table}.{args.status}: {n1} -> {n2}  (+{n2 - n1}/{args.seconds}s = {rate:.1f}/s)")
+    print(
+        f"{args.table}.{args.status}: {n1} -> {n2}  (+{n2 - n1}/{args.seconds}s = {rate:.1f}/s)"
+    )
     print(f"pending 剩余: {pending}")
     if rate > 0:
         eta_h = pending / rate / 3600

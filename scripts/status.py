@@ -28,7 +28,9 @@ import aiosqlite
 # (与 pytest 的 pythonpath=["."] 配置保持一致)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from crawler.config import DB_PATH  # 依赖上方 sys.path 调整
+from crawler.adapters.config import Settings  # 依赖上方 sys.path 调整
+
+DB_PATH = Settings.from_env().db_path
 
 # 与 cli.py 子命令一一对应;f-string 拼接的 table 名只来自这个白名单
 STAGES = ("issues", "boards", "articles")

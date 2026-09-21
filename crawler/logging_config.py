@@ -13,7 +13,11 @@
 import logging
 from logging.handlers import TimedRotatingFileHandler
 
-from .config import LOG_DIR, LOG_INTERVAL
+from .adapters.config import Settings
+
+# 日志路径与节流间隔与组合根同源(导入时求值,与原模块级常量语义一致)
+LOG_DIR = Settings.from_env().log_dir
+LOG_INTERVAL = Settings.from_env().log_interval
 
 # 单一格式即可:时间 / 级别 / 模块 / 消息
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -26,7 +30,7 @@ def setup_logging(level: int = logging.INFO) -> None:
 
     root = logging.getLogger()
     if root.handlers:
-        # 已配置过(cli.py 与 crawler.run() 都调),直接对齐级别后返回
+        # 已配置过(cli.py 与 bootstrap.run_stage 都调),直接对齐级别后返回
         root.setLevel(level)
         return
 

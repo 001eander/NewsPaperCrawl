@@ -1,18 +1,20 @@
 """
 articles schema 迁移测试
 ========================
-验证 init_db 对既有库的幂等迁移:
+验证 SqliteRepository.init 对既有库的幂等迁移:
   - 旧列 content 被 RENAME 为 content_path
   - 旧正文内容被置空(弃置)
-  - 二次 init_db 幂等无副作用
+  - 二次 init 幂等无副作用
 """
 
 import asyncio
+from pathlib import Path
 
 import aiosqlite
 import pytest
 
-from crawler import db
+from crawler.adapters.config import Settings
+from crawler.adapters.sqlite_repo import SqliteRepository
 
 # 旧版 articles 建表语句(含 content 列,无 content_path)
 OLD_SCHEMA = """
@@ -28,6 +30,26 @@ CREATE TABLE IF NOT EXISTS articles (
     error        TEXT
 );
 """
+
+
+def _settings(db_path: Path) -> Settings:
+    """手工构造 Settings(frozen dataclass,字段全部必填);测试只用 db_path"""
+    return Settings(
+        data_dir=db_path.parent,
+        log_dir=db_path.parent,
+        log_interval=10,
+        concurrency=8,
+        secrets_dir=db_path.parent,
+        db_path=db_path,
+        paperlist_csv=db_path.parent / "报纸清单.csv",
+    )
+
+
+async def _init_db(db_path: Path) -> None:
+    """用 SqliteRepository 初始化(建表 + 迁移),随后关闭连接"""
+    repo = SqliteRepository(_settings(db_path))
+    await repo.init()
+    await repo.close()
 
 
 @pytest.fixture
@@ -69,14 +91,7 @@ def sqlite3_connect(path):
 
 def test_migration_renames_content_to_content_path(old_db):
     """旧库迁移后: 无 content 列,有 content_path 列,旧正文置空"""
-    loop = asyncio.new_event_loop()
-
-    async def run():
-        d = await db.init_db(old_db)
-        await d.close()
-
-    loop.run_until_complete(run())
-    loop.close()
+    asyncio.run(_init_db(old_db))
 
     cols = _cols(old_db)
     assert "content" not in cols
@@ -94,17 +109,9 @@ def test_migration_renames_content_to_content_path(old_db):
 
 
 def test_migration_idempotent(old_db):
-    """二次 init_db 幂等,不报错、不再迁移"""
-    loop = asyncio.new_event_loop()
-
-    async def run():
-        d1 = await db.init_db(old_db)
-        await d1.close()
-        d2 = await db.init_db(old_db)
-        await d2.close()
-
-    loop.run_until_complete(run())
-    loop.close()
+    """二次 init 幂等,不报错、不再迁移"""
+    asyncio.run(_init_db(old_db))
+    asyncio.run(_init_db(old_db))
 
     assert "content" not in _cols(old_db)
     assert "content_path" in _cols(old_db)
@@ -113,14 +120,7 @@ def test_migration_idempotent(old_db):
 def test_new_db_has_content_path(tmp_path):
     """新库直接建 content_path 列,无 content 列"""
     path = tmp_path / "fresh.db"
-    loop = asyncio.new_event_loop()
-
-    async def run():
-        d = await db.init_db(path)
-        await d.close()
-
-    loop.run_until_complete(run())
-    loop.close()
+    asyncio.run(_init_db(path))
 
     cols = _cols(path)
     assert "content" not in cols

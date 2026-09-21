@@ -1,9 +1,10 @@
 """
-HTTP 客户端模块
-===============
+APABI 站点 HTTP 适配器
+=====================
+实现 HttpGateway:
 - aiohttp 异步会话
 - 并发信号量 + 随机延迟(礼貌限速)
-- 自动注入 cookie,检测认证失效
+- 自动注入 cookie,检测认证失效(通知 + 抛 AuthError)
 - 证书校验关闭(对应浏览器的 --ignore-https-errors)
 """
 
@@ -11,28 +12,30 @@ import asyncio
 import logging
 import random
 import ssl
+from pathlib import Path
 
 import aiohttp
 
-from .auth import AuthError, AuthManager, get_auth
-from .config import CONCURRENCY
+from ..domain.exceptions import AuthError
+from ..ports.auth import AuthProvider
+from ..ports.notifier import Notifier
 
 logger = logging.getLogger(__name__)
-
-BASE = "https://apabi--com.elib.zyproxy.zjlib.cn/zjlib/"
 
 
 class HttpClient:
     def __init__(
         self,
-        auth: AuthManager | None = None,
-        concurrency: int = CONCURRENCY,
+        auth: AuthProvider,
+        notifier: Notifier,
+        concurrency: int = 8,
         img_concurrency: int = 6,
         min_delay: float = 0.3,
         max_delay: float = 1.0,
         retries: int = 3,
     ):
-        self.auth = auth or get_auth()
+        self.auth = auth
+        self.notifier = notifier
         self.concurrency = concurrency
         self.img_concurrency = img_concurrency
         self.min_delay = min_delay
@@ -86,10 +89,19 @@ class HttpClient:
                             return ""
                         # 认证检测①: 被重定向到登录域(cookie 过期 → 302 -> login.xxx)
                         if _redirected_to_login(resp):
+                            await self.notifier.notify(
+                                "浙图爬虫:认证失效",
+                                f"访问 {url} 时检测到登录跳转,请重新登录",
+                            )
                             raise AuthError(f"认证失效于 {url}(被重定向到登录页)")
                         text = await resp.text()
                         # 认证检测②: 响应内容呈现登录页(兜底)
-                        await self.auth.check_and_raise(url, text)
+                        if self.auth.is_auth_fail(text):
+                            await self.notifier.notify(
+                                "浙图爬虫:认证失效",
+                                f"访问 {url} 时检测到登录跳转,请重新登录",
+                            )
+                            raise AuthError(f"认证失效于 {url}")
                         if resp.status >= 400:
                             raise RuntimeError(f"HTTP {resp.status} for {url}")
                         return text
@@ -101,7 +113,7 @@ class HttpClient:
                     await asyncio.sleep(2**attempt)
         raise RuntimeError(f"请求重试耗尽: {url}: {last_err}")
 
-    async def download(self, url: str, save_path) -> bool:
+    async def download(self, url: str, save_path: Path) -> bool:
         """下载二进制文件(图片等),返回是否成功"""
         save_path.parent.mkdir(parents=True, exist_ok=True)
         headers = {

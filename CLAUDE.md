@@ -38,11 +38,11 @@ uv run ruff format --check .     # 格式检查
 uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 ```
 
-测试均为纯函数/单测,不触网。`test_article_store.py` 用 `FakeClient` 伪造下载器、用 `monkeypatch` 把 `crawler.DATA_DIR` 指到 `tmp_path` 落盘验证。
+测试均不触网、不落真 DB:`test_parser_blocks.py` 测解析纯函数;`test_migration.py` 用 `SqliteRepository` + 临时库验证迁移;`test_article_store.py` 用 Fake 网关 + `tmp_path` 存储验证配图与正文 JSON 落盘;`test_pipeline.py` 用全 Fake 端口(Gateway/Repo/Store)+ stub 解析函数验证四阶段状态机。
 
 ## 架构
 
-四阶段流水线,入口是 [cli.py](cli.py)(argparse 分发),真正的调度在 [crawler/crawler.py](crawler/crawler.py) 的 `run(stage, **kwargs)`。每阶段独立可重复执行:
+四阶段流水线,入口是 [cli.py](cli.py)(argparse 分发),装配与调度在 [crawler/bootstrap.py](crawler/bootstrap.py) 的 `run_stage(stage, **kwargs)`(组合根)。每阶段独立可重复执行:
 
 | 阶段 | 子命令 | 产出 |
 |------|--------|------|
@@ -66,30 +66,40 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 
 ### metaid 编码规则(跨模块约定)
 
-`metaid` 格式横跨 [parser.py](crawler/parser.py)、[crawler.py](crawler/crawler.py)、[db.py](crawler/db.py) 三层,改任何一处要同步验证:
+`metaid` 格式横跨解析适配器([apabi_parser.py](crawler/adapters/apabi_parser.py))、领域规则([rules.py](crawler/domain/rules.py))与流水线([pipeline.py](crawler/services/pipeline.py)),改任何一处要同步验证:
 
 - 版面: `nb.{code}_{YYYYMMDD}_{board}`(如 `nb.D411300nyrb_20260731_A1`)
 - 报道: `nw.{code}_{YYYYMMDD}_{board}-{seq}`(如 `nw.D330100hzrb_20260110_1-A01`;报道 metaid 必须含 `-`,否则请求会因截断失败)
-- **版面编码不统一**(`A01` vs `A1` vs `01`),不能靠猜:[crawler.py:137-182](crawler/crawler.py#L137-L182) 先请求 `paperid` 页面探测真实编码,再把 metaid 里的日期替换成目标日期后请求
+- **版面编码不统一**(`A01` vs `A1` vs `01`),不能靠猜:[pipeline.py:139-176](crawler/services/pipeline.py#L139-L176) 的 `_crawl_one_issue` 先请求 `paperid` 页面探测真实编码,再把 metaid 里的日期替换成目标日期后请求
 - URL 里编码用 `-`(构建版面图 URL 时把 `_` 换掉);图片文件名序号从 1 起
 
-### 模块职责
+### 模块职责(六边形分层)
 
-- [crawler/parser.py](crawler/parser.py) — 纯函数 HTML/XML 解析(BeautifulSoup + 正则),以及所有 URL 构造(`build_*` 系列)。**全部基于文本解析,不依赖浏览器**;版面/报道解析逻辑是"浏览器验证过"的固化成代码
-- [crawler/client.py](crawler/client.py) — aiohttp 异步会话:并发限速、重试(指数退避)、cookie 注入、认证失效检测(重定向到登录域 / 响应含登录页特征)
-- [crawler/auth.py](crawler/auth.py) — 加载/保存 cookie(兼容 Playwright 导出的 list 格式与旧 dict 格式,按 domain 匹配注入)、`AuthError` 异常、失效检测
-- [crawler/db.py](crawler/db.py) — 全部 SQLite 操作与表结构(`SCHEMA`);含旧库迁移(articles.content → content_path,幂等)
-- [crawler/notifier.py](crawler/notifier.py) — Bark 手机推送;异步上下文挂后台任务,同步上下文直接 `run`,未配置时静默跳过
+依赖方向单向:`domain ← ports ← services ← adapters/bootstrap`;领域层不依赖任何外层,服务层只依赖 domain 与 ports(唯一例外是站点解析来自 `adapters.apabi_parser`,项目约定:解析即站点知识)。
+
+- [cli.py](cli.py) — 薄壳:argparse 子命令定义 + 异常出口(`AuthError` → 报错并以非零码退出)
+- [crawler/domain/](crawler/domain/) — 领域层,纯逻辑无 I/O:`models.py`(Paper/Issue/Board/Article/ParsedArticle 等 dataclass 与 `Status` 状态机)、`rules.py`(metaid 编码 / 存储相对路径 / 认证失效特征)、`exceptions.py`(`AuthError`)
+- [crawler/ports/](crawler/ports/) — 端口层,用 `typing.Protocol` 声明服务层需要的能力:`http` / `repository` / `storage` / `notifier` / `auth`
+- [crawler/services/pipeline.py](crawler/services/pipeline.py) — 服务层:`CrawlService` 编排四阶段,只依赖 domain 规则、三个端口与并发度
+- [crawler/adapters/](crawler/adapters/) — 适配器层,端口的具体实现:
+  - `apabi_parser.py` — 纯函数 HTML/XML 解析(BeautifulSoup + 正则)与全部 URL 构造(`build_*` 系列)。**全部基于文本解析,不依赖浏览器**;解析逻辑是"浏览器验证过"的固化成代码
+  - `apabi_http.py` — aiohttp 异步会话:并发限速、重试(指数退避)、cookie 注入、认证失效检测(重定向到登录域 / 响应含登录页特征)
+  - `cookie_auth.py` — 加载 cookie(兼容 Playwright 导出的 list 格式与旧 dict 格式,按 domain 匹配注入);失效判定委托领域规则
+  - `sqlite_repo.py` — 全部 SQLite 操作与表结构(`SCHEMA`);含旧库迁移(articles.content → content_path,幂等)
+  - `bark.py` — Bark 手机推送,未配置时静默跳过(推送必须 await 完成,见本节末)
+  - `fs_storage.py` — 正文 JSON / 位置 JSON 落盘到 `DATA_DIR`
+  - `paperlist_csv.py` — 报纸清单 CSV → `domain.Paper` 列表
+  - `config.py` — `Settings`(frozen dataclass):所有运行时路径统一收口,支持环境变量覆盖(Docker 用 `NEWSPAPER_*` 注入)
+- [crawler/bootstrap.py](crawler/bootstrap.py) — 组合根:读配置、建适配器、注入服务,并负责收尾通知(正常完成 / 认证失效 / 异常中断;`import` 阶段不构造 HttpClient,也不推送)
 - [crawler/logging_config.py](crawler/logging_config.py) — 控制台 + 按日滚动文件双通道,幂等;`ProgressLogger` 用于高频事件节流(如报道落库)
-- [crawler/config.py](crawler/config.py) — 所有运行时路径统一收口,支持环境变量覆盖(Docker 用 `NEWSPAPER_*` 注入)
 - [scripts/login.py](scripts/login.py) — Playwright 同步登录流程:打开 share 资源页 → 点"方正数字报"让 JS 弹出新标签页 → 自动填账号/选机构 → 等用户输验证码点登录 → 等 cookie 连续 15s 无变化(登录稳定)后保存全部 cookie
 
 ### 认证与通知
 
 - `.secrets/cookies.json`(gitignore)存登录 cookie,`vpn358_sid` 是核心会话 cookie
 - `.secrets/credentials.json` 存账号密码,`.secrets/bark.json` 存 Bark 设备 key;均有 `.example` 模板
-- 认证失效 → 抛 `AuthError` → `run()` 推 Bark、`cli.py` 以非零码退出(便于 cron/systemd 感知)
-- 每次运行收尾(正常完成/认证失效/异常中断)都会通过 `notify_job_result` 推 Bark
+- 认证失效 → 抛 `AuthError` → `bootstrap.run_stage` 推 Bark、`cli.py` 以非零码退出(便于 cron/systemd 感知)
+- 每次运行收尾(正常完成/认证失效/异常中断)都会推 Bark;推送是异步 I/O,必须在 `run_stage` 返回前 await 完成,挂后台任务会被事件循环关闭时取消
 
 ## 部署
 
@@ -98,6 +108,6 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 ## 注意事项
 
 - `.secrets/`、`data/`、`logs/` 均 gitignore,不要提交认证文件或爬取数据
-- 测试直接 `from crawler import ...`(项目未安装为包,靠 pytest 的 `pythonpath=["."]` 配置)
+- 测试从 `crawler.adapters` / `crawler.services` 等子包导入(项目未安装为包,靠 pytest 的 `pythonpath=["."]` 配置)
 - 同步导入 CSV 用同步 `open`(ruff 忽略 `ASYNC230`,属有意为之)
 - `.playwright-mcp/` 是浏览器调试工具的临时产物,与代码无关,可忽略

@@ -17,8 +17,8 @@ import argparse
 import asyncio
 import logging
 
-from crawler.auth import AuthError
-from crawler.crawler import run
+from crawler.bootstrap import run_stage
+from crawler.domain.exceptions import AuthError
 from crawler.logging_config import setup_logging
 
 
@@ -75,9 +75,9 @@ def main():
 
     kwargs = {k: v for k, v in vars(args).items() if k != "stage" and v is not None}
     try:
-        asyncio.run(run(args.stage, **kwargs))
+        asyncio.run(run_stage(args.stage, **kwargs))
     except AuthError as e:
-        # 认证失效:已由 run() 推送 Bark,这里给出可操作提示并以非零码退出
+        # 认证失效:已由 run_stage() 推送 Bark,这里给出可操作提示并以非零码退出
         # (便于 cron/systemd 感知失败)
         logging.getLogger(__name__).error(
             "认证失效: %s\n已通过 Bark 推送通知,请重新执行 uv run scripts/login.py "

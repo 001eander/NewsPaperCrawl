@@ -25,7 +25,9 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from crawler.config import DB_PATH  # noqa: E402
+from crawler.adapters.config import Settings
+
+DB_PATH = Settings.from_env().db_path
 
 
 def connect() -> sqlite3.Connection:
@@ -35,7 +37,9 @@ def connect() -> sqlite3.Connection:
 
 
 def backup_db() -> Path:
-    bak = DB_PATH.with_name(f"crawl.db.retry-{datetime.now():%Y%m%d-%H%M%S}.bak")
+    bak = DB_PATH.with_name(
+        f"crawl.db.retry-{datetime.now().astimezone():%Y%m%d-%H%M%S}.bak"
+    )
     src = sqlite3.connect(DB_PATH)
     dst = sqlite3.connect(bak)
     try:
@@ -112,8 +116,12 @@ def main():
     )
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--stats", action="store_true", help="查看各表状态分布")
-    g.add_argument("--reset", choices=["boards", "articles"], help="重置某阶段失败项为 pending")
-    g.add_argument("--export", metavar="TABLE", help="导出仍 failed 清单(issues|articles)")
+    g.add_argument(
+        "--reset", choices=["boards", "articles"], help="重置某阶段失败项为 pending"
+    )
+    g.add_argument(
+        "--export", metavar="TABLE", help="导出仍 failed 清单(issues|articles)"
+    )
     p.add_argument("--only-network", action="store_true", help="仅重试网络/502 类错误")
     p.add_argument("--out", default=None, help="--export 输出 CSV 路径")
     p.add_argument("--no-backup", action="store_true", help="重置前不备份数据库")
@@ -132,7 +140,8 @@ def main():
                 cmd_reset_articles(con, args.only_network)
         elif args.export:
             out = args.out or str(
-                DB_PATH.parent / f"failed_{args.export}_{datetime.now():%Y%m%d}.csv"
+                DB_PATH.parent
+                / f"failed_{args.export}_{datetime.now().astimezone():%Y%m%d}.csv"
             )
             cmd_export(con, args.export, out)
     finally:

@@ -1,14 +1,15 @@
 """
-HTML 解析模块
-=============
+APABI 站点解析适配器
+====================
 把浏览器验证过的解析逻辑固化成代码:
   - 期次列表: newspaper.issue 的 XML
   - 版面列表: 版面页 HTML 里的 nb.* 链接(需探测,编码不统一)
   - 版面位置: <map> area 多边形坐标 + 对应文章 metaid
   - 报道正文: h2.bo 标题 + .daxiao 元数据 + #zoom 正文(保序 blocks: 段落+配图)
   - 报道配图: #zoom 内 <img cnml.files/*.resbrief.jpg>(随正文保序提取)
+  - URL 构造: 期次 / 版面页 / 报道页 / 版面图
 
-全部基于纯文本 HTML 解析,不依赖浏览器。
+全部基于纯文本 HTML 解析,不依赖浏览器;返回值统一为 domain 对象。
 """
 
 import logging
@@ -16,9 +17,12 @@ import re
 
 from bs4 import BeautifulSoup
 
-from .config import BASE_URL
+from ..domain.models import ArticlePosition, Board, ParsedArticle
+from ..domain.rules import extract_board_code, paper_image_code
 
 logger = logging.getLogger(__name__)
+
+BASE_URL = "https://apabi--com.elib.zyproxy.zjlib.cn/zjlib/"
 
 
 # ---------------- 期次 ----------------
@@ -33,7 +37,7 @@ def parse_issue_dates(xml_text: str) -> list[str]:
 # ---------------- 版面 ----------------
 
 
-def parse_boards_from_page(html: str, date: str) -> list[dict]:
+def parse_boards_from_page(html: str, paperid: str, date: str) -> list[Board]:
     """
     从版面页 HTML 提取该期全部版面。
 
@@ -46,10 +50,10 @@ def parse_boards_from_page(html: str, date: str) -> list[dict]:
     (如 "A1版：时政" / "01版：首版"),不再拆版号与版面名。
     导航链接(上一期/下一版)没有这个 input,天然被排除。
 
-    返回 [{metaid, board_no}],board_no 为"版号+版面名"整体。
+    返回 Board 列表,board_no 为"版号+版面名"整体。
     """
     soup = BeautifulSoup(html, "html.parser")
-    boards: dict[str, dict] = {}
+    boards: dict[str, Board] = {}
     for a in soup.find_all("a", href=True):
         inp = a.find("input", class_="newsMetaid")
         if not inp:
@@ -64,18 +68,20 @@ def parse_boards_from_page(html: str, date: str) -> list[dict]:
         if not board_no:
             board_no = metaid.split("_")[-1]  # 兜底: 取 metaid 尾段
         if metaid not in boards:
-            boards[metaid] = {"metaid": metaid, "board_no": board_no}
+            boards[metaid] = Board(
+                metaid=metaid, paperid=paperid, date=date, board_no=board_no
+            )
     return list(boards.values())
 
 
 # ---------------- 版面位置 ----------------
 
 
-def parse_article_positions(html: str, date: str) -> list[dict]:
+def parse_article_positions(html: str, date: str) -> list[ArticlePosition]:
     """
     从版面页 HTML 的 <map> area 提取每篇报道的位置。
-    返回 [{metaid, title, poly_points, bbox}]
-    poly_points: 原始多边形坐标 [[x,y],...]
+    返回 ArticlePosition 列表
+    poly_points: 原始多边形坐标 [(x, y), ...]
     bbox:        {x,y,w,h} 包围盒
     """
     soup = BeautifulSoup(html, "html.parser")
@@ -97,12 +103,12 @@ def parse_article_positions(html: str, date: str) -> list[dict]:
         if not points:
             continue
         results.append(
-            {
-                "metaid": metaid,
-                "title": title,
-                "poly_points": points,
-                "bbox": bbox_of(points),
-            }
+            ArticlePosition(
+                metaid=metaid,
+                title=title,
+                poly_points=points,
+                bbox=bbox_of(points),
+            )
         )
     return results
 
@@ -122,10 +128,9 @@ def bbox_of(points: list[tuple[float, float]]) -> dict:
 # ---------------- 报道 ----------------
 
 
-def parse_article(html: str) -> dict | None:
+def parse_article(html: str) -> ParsedArticle | None:
     """
     从报道页 HTML 提取标题、元信息、正文(保序的段落+图片列表)。
-    返回 {title, source_meta, blocks}
 
     blocks 按 #zoom 内文档序遍历 <p>/<img> 生成,保留图片与段落的真实顺序:
       - 段落块: {type:"p", text}
@@ -171,7 +176,7 @@ def parse_article(html: str) -> dict | None:
                     )
     if not title and not blocks:
         return None
-    return {"title": title, "source_meta": source_meta, "blocks": blocks}
+    return ParsedArticle(title=title, source_meta=source_meta, blocks=blocks)
 
 
 def parse_article_images(html: str) -> list[str]:
@@ -190,32 +195,42 @@ def parse_article_images(html: str) -> list[str]:
     return urls
 
 
-# ---------------- 版面图 URL ----------------
+def find_board_metaid_template(html: str) -> str | None:
+    """从版面页 HTML 找一个 nb.* metaid 模板"""
+    m = re.search(r"metaid=(nb\.[^&]+)", html)
+    return m.group(1) if m else None
 
 
-def build_board_image_url(paperid: str, date: str, board_no: str) -> str:
+# ---------------- URL 构造 ----------------
+
+
+def build_board_image_url(paperid: str, date: str, board_metaid: str) -> str:
     """
     构造版面图 URL。
-    paperid: n.D411300nyrb
-    date:    YYYY-MM-DD
-    board_no: A1 / 01 / A1版：时政 / nb.D411300nyrb_20260731_A1
-    编码规则: 若 board_no 传的是 metaid(建议),取日期后、下划线尾段作为真实版面编码
-    (含字母/前导零,如 A1 / 01);否则原样使用。图片路径里版面编码由 _ 改为 -。
+    paperid:      n.D411300nyrb
+    date:         YYYY-MM-DD
+    board_metaid: nb.D411300nyrb_20260731_A1
+
+    编码规则: 取 metaid 日期后的下划线尾段作为真实版面编码(含字母/前导零,
+    如 A1 / 01)。图片路径里版面编码由 _ 改为 -。
     """
-    code = paperid.replace("n.", "")  # D411300nyrb —— 目录名和 metaid 都带 D
-    if board_no.startswith("nb."):
-        # metaid: nb.D411300nyrb_20260731_A1 -> 编码 A1
-        board_no = board_no.split("_")[-1]
+    code = paper_image_code(paperid)  # D411300nyrb —— 目录名和 metaid 都带 D
+    board_code = extract_board_code(board_metaid)  # metaid -> 尾段 A1
     y, m, d = date.split("-")
     return (
         f"https://img.enews.apabi.com/{code}/{y}-{m}/{d}/mpml.files/"
-        f"nb.{code}_{date.replace('-', '')}-{board_no}.pagebrief.1.jpg"
+        f"nb.{code}_{date.replace('-', '')}-{board_code}.pagebrief.1.jpg"
     )
 
 
 def build_issue_url(paperid: str, year: int, month: int) -> str:
     """构造月份期次查询 URL"""
     return BASE_URL + f"?pid=newspaper.issue&year={year}&month={month}&metaid={paperid}"
+
+
+def build_issue_probe_url(paperid: str) -> str:
+    """构造期次探测 URL:paperid 页默认返回最新一期,用于探测版面编码格式"""
+    return BASE_URL + f"?pid=newspaper.page&paperid={paperid}&wd=&cult=CN"
 
 
 def build_board_page_url(metaid: str) -> str:

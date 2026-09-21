@@ -1,44 +1,28 @@
 """
-认证与通知模块
-==============
+Cookie 认证适配器
+=================
 - cookies.json: 保存 apabi 站点的登录 cookie(私有,gitignore)
-- bark.json:    Bark 推送配置(设备 key)
 - 功能:
     * 加载/保存 cookie
-    * 检测认证是否失效(响应特征)
-    * 认证失效时通过 Bark 通知用户重新登录
+    * 构造 Cookie 请求头(按域名匹配)
+    * 判定认证是否失效(委托领域规则;失效后的通知与抛错由 HTTP 适配器负责)
 """
 
 import json
 import logging
 from pathlib import Path
 
-from .config import SECRETS_DIR
-from .notifier import BarkNotifier
+from ..domain.exceptions import AuthError
+from ..domain.rules import response_is_auth_fail
 
 logger = logging.getLogger(__name__)
 
-COOKIES_FILE = SECRETS_DIR / "cookies.json"
-BARK_FILE = SECRETS_DIR / "bark.json"
-
-# 认证失效的响应特征:登录跳转 / 出现"登录"提示 / 会话过期页
-AUTH_FAIL_MARKERS = [
-    "登录",
-    "session 已过期",
-    "login",
-    "sso/login",
-    "用户登录",
-]
-
-
-class AuthError(Exception):
-    """认证失效异常"""
-
 
 class AuthManager:
-    def __init__(self, cookies_file=COOKIES_FILE, bark_file=BARK_FILE):
+    """实现 AuthProvider:加载登录 cookie 并构造 Cookie 请求头"""
+
+    def __init__(self, cookies_file: Path):
         self.cookies_file = Path(cookies_file)
-        self.bark_file = Path(bark_file)
         self.cookies: dict[str, str] = {}
         self._load()
 
@@ -122,52 +106,6 @@ class AuthManager:
                 cookies = self.cookies
         return "; ".join(f"{k}={v}" for k, v in cookies.items())
 
-    # ---- 失效检测 ----
-
-    def response_is_auth_fail(self, text: str) -> bool:
-        """
-        判断响应文本是否表示认证失效。
-        核心规则: 若响应是 ELib 授权访问系统的登录页(重定向后),则 cookie 已过期。
-        """
-        text = text[:4000]  # 只检查前部
-        low = text.lower()
-        # ① ELib 登录页特征: 重定向到 index.php?r=site/login, 表单字段 FrontLoginForm
-        if (
-            "frontloginform" in low
-            or "index.php?r=site%2flogin" in low
-            or "index.php?r=site/login" in low
-        ):
-            return True
-        # ② 微信扫码登录特征(ELib 也支持)
-        if "微信扫一扫登录" in text:
-            return True
-        # ③ 通用: sso/login 跳转
-        if "sso/login" in low or "login.aspx" in low:
-            return True
-        # ④ 内容为空或极小,且含"登录"
-        return len(text) < 200 and any(m in text for m in ["登录", "login"])
-
-    async def check_and_raise(self, url: str, text: str):
-        """若认证失效,抛 AuthError 并推送 Bark"""
-        if self.response_is_auth_fail(text):
-            await self.notify(
-                "浙图爬虫:认证失效", f"访问 {url} 时检测到登录跳转,请重新登录"
-            )
-            raise AuthError(f"认证失效于 {url}")
-
-    # ---- Bark 通知 ----
-
-    async def notify(self, title: str, body: str = ""):
-        """通过 Bark 推送通知到手机(委托 BarkNotifier)"""
-        await BarkNotifier().notify(title, body)
-
-
-# 单例
-_auth: AuthManager | None = None
-
-
-def get_auth() -> AuthManager:
-    global _auth
-    if _auth is None:
-        _auth = AuthManager()
-    return _auth
+    def is_auth_fail(self, text: str) -> bool:
+        """判断响应文本是否表示认证失效(领域规则)"""
+        return response_is_auth_fail(text)
