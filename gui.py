@@ -307,13 +307,15 @@ class App(tk.Tk):
         f1.pack(fill=tk.X, pady=4)
         self._start_year_var = tk.StringVar(value="2014")
         self._end_year_var = tk.StringVar(value="2026")
+        self._start_month_var = tk.StringVar()
         self._end_month_var = tk.StringVar()
         self._issues_conc_var = tk.StringVar()
         self._labeled_entry(f1, 0, "起始年", self._start_year_var)
         self._labeled_entry(f1, 1, "结束年", self._end_year_var)
-        self._labeled_entry(f1, 2, "结束月份(可空)", self._end_month_var)
-        self._labeled_entry(f1, 3, "并发(可空)", self._issues_conc_var)
-        self._stage_button(f1, 4, "issues", self._collect_issues)
+        self._labeled_entry(f1, 2, "开始月份(可空)", self._start_month_var)
+        self._labeled_entry(f1, 3, "结束月份(可空)", self._end_month_var)
+        self._labeled_entry(f1, 4, "并发(可空)", self._issues_conc_var)
+        self._stage_button(f1, 5, "issues", self._collect_issues)
 
         # 阶段2: 抓版面
         f2 = ttk.LabelFrame(canvas_frame, text="阶段2 boards - 抓版面", padding=6)
@@ -398,6 +400,8 @@ class App(tk.Tk):
         if start is None or end is None:
             raise ValueError("起始年/结束年必填")
         kwargs: dict[str, Any] = {"start_year": start, "end_year": end}
+        if (m := self._opt_int(self._start_month_var, "开始月份")) is not None:
+            kwargs["start_month"] = m
         if (m := self._opt_int(self._end_month_var, "结束月份")) is not None:
             kwargs["end_month"] = m
         if (c := self._opt_int(self._issues_conc_var, "并发")) is not None:

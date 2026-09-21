@@ -64,6 +64,7 @@ class CrawlService:
         start_year: int,
         end_year: int,
         end_month: int | None = None,
+        start_month: int | None = None,
         concurrency: int | None = None,
     ) -> int:
         """对每份报纸,按月查询期次。返回新增期次数。"""
@@ -74,14 +75,11 @@ class CrawlService:
         async def one_paper(p: Paper) -> None:
             nonlocal total
             paperid = p.paperid
-            # 枚举该报所有月份
+            # 枚举该报所有月份:起始年裁剪下限、结束年裁剪上限,中间年份取全年
             for y in range(start_year, end_year + 1):
-                months = (
-                    range(1, 13)
-                    if y < end_year or end_month is None
-                    else range(1, end_month + 1)
-                )
-                for m in months:
+                lo = start_month if (y == start_year and start_month is not None) else 1
+                hi = end_month if (y == end_year and end_month is not None) else 12
+                for m in range(lo, hi + 1):
                     async with sem:
                         url = apabi_parser.build_issue_url(paperid, y, m)
                         try:

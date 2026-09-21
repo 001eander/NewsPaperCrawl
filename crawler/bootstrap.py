@@ -62,6 +62,7 @@ async def run_stage(stage: str, **kwargs) -> None:
                     kwargs["start_year"],
                     kwargs["end_year"],
                     kwargs.get("end_month"),
+                    kwargs.get("start_month"),
                     concurrency,
                 )
                 logger.info("阶段1 完成,新增期次 %s", n)

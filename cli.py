@@ -5,7 +5,7 @@
 
 用法:
   uv run cli.py import                       # 阶段0: 导入报纸清单
-  uv run cli.py issues 2014 2026 --end-month 7   # 阶段1: 枚举全部期次(2014~2026-07)
+  uv run cli.py issues 2014 2026 --start-month 7 --end-month 7   # 阶段1: 枚举全部期次(2014-07~2026-07)
   uv run cli.py boards --limit 50           # 阶段2: 抓版面/位置/版面图(省略 --limit 处理全部 pending)
   uv run cli.py articles --limit 100        # 阶段3: 抓报道正文+配图(省略 --limit 处理全部 pending)
 
@@ -32,6 +32,7 @@ def main():
     p_issues = sub.add_parser("issues", help="枚举期次")
     p_issues.add_argument("start_year", type=int)
     p_issues.add_argument("end_year", type=int)
+    p_issues.add_argument("--start-month", type=int, default=None)
     p_issues.add_argument("--end-month", type=int, default=None)
     p_issues.add_argument(
         "--concurrency",

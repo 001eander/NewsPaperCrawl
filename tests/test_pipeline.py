@@ -8,7 +8,8 @@
     抓取异常 -> failed 且记录原因;AuthError 上抛且不标 failed
   - crawl_boards: 一期成功 -> 期次 done + 版面落库 + 版面图路径入库;
     探测两轮回退(第一轮无版面 -> 模板替换日期后第二轮命中);无版面 -> 期次 failed
-  - crawl_issues: 多月份日期累计入库;单月查询异常只 warning,不中断
+  - crawl_issues: 多月份日期累计入库;单月查询异常只 warning,不中断;
+    start_month 裁剪起始年的月份下限
 """
 
 import asyncio
@@ -373,6 +374,29 @@ def test_crawl_issues_accumulates_months(tmp_path):
         (PAPERID, ["2026-01-05", "2026-01-06"]),
         (PAPERID, ["2026-02-05", "2026-02-06"]),
     ]
+
+
+def test_crawl_issues_respects_start_month(tmp_path):
+    """同年内 start_month=2、end_month=2 -> 只查询并入库 2 月,跳过 1 月"""
+    feb_url = pipeline.apabi_parser.build_issue_url(PAPERID, 2026, 2)
+    gateway = FakeGateway(
+        pages={
+            pipeline.apabi_parser.build_issue_url(PAPERID, 2026, m): _issue_xml(
+                [f"2026-0{m}-05"]
+            )
+            for m in (1, 2)
+        }
+    )
+    repo = FakeRepo(papers=[Paper(paperid=PAPERID, name="杭州日报")])
+
+    n = asyncio.run(
+        _service(gateway, repo, FakeStore(tmp_path)).crawl_issues(2026, 2026, 2, 2)
+    )
+
+    assert n == 1
+    assert repo.added_issues == [(PAPERID, ["2026-02-05"])]
+    # 1 月的 URL 根本不应被请求
+    assert all(url == feb_url for url in gateway.get_urls)
 
 
 def test_crawl_issues_continues_after_month_error(tmp_path):
