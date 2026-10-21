@@ -282,12 +282,12 @@ class App(tk.Tk):
         canvas_frame.pack(fill=tk.BOTH, expand=True)
 
         # 登录:认证失效时重新获取 cookie(子进程跑 scripts/login.py,
-        # 弹出浏览器窗口,验证码需手动输入;输出实时进日志页)
+        # 自动完成账号/验证码/提交;输出实时进日志页)
         fl = ttk.LabelFrame(canvas_frame, text="登录 - 重新获取 cookie", padding=6)
         fl.pack(fill=tk.X, pady=4)
         ttk.Label(
             fl,
-            text="认证失效时点击右侧按钮,在弹出的浏览器里输验证码并点登录",
+            text="认证失效时点击右侧按钮,脚本会自动登录并刷新 cookie",
         ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=2)
         self._login_button = ttk.Button(fl, text="登录", command=self._on_login)
         self._login_button.grid(row=0, column=2, padx=4, pady=2)
@@ -469,12 +469,12 @@ class App(tk.Tk):
 
     def _on_login(self) -> None:
         if self._login_proc is not None and self._login_proc.poll() is None:
-            messagebox.showinfo("提示", "登录窗口已在运行,请在浏览器里完成登录")
+            messagebox.showinfo("提示", "登录脚本已在运行,请稍候")
             return
         try:
             # 子进程 stdout 是管道时会回落到 GBK(终端里则用控制台 Unicode
-            # API,所以手动跑没事);强制 UTF-8,否则 login.py 里的 "⏸" 等
-            # 字符触发 UnicodeEncodeError,且 GUI 端解码乱码
+            # API,所以手动跑没事);强制 UTF-8,否则中文输出触发
+            # UnicodeEncodeError,且 GUI 端解码乱码
             env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
             self._login_proc = subprocess.Popen(
                 [sys.executable, str(LOGIN_SCRIPT)],
