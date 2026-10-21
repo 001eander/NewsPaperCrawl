@@ -33,6 +33,7 @@ class HttpClient:
         min_delay: float = 0.3,
         max_delay: float = 1.0,
         retries: int = 3,
+        auth_retries: int = 6,
     ):
         self.auth = auth
         self.notifier = notifier
@@ -41,6 +42,7 @@ class HttpClient:
         self.min_delay = min_delay
         self.max_delay = max_delay
         self.retries = retries
+        self.auth_retries = auth_retries
         self._sem = asyncio.Semaphore(concurrency)
         # 图片 CDN(http-img--enews--apabi-*)对高并发敏感:持续高压会从 ~1s 退化到 20s+。
         # 图片下载走独立低并发信号量,避免打爆 CDN 反噬整体吞吐。
@@ -53,7 +55,9 @@ class HttpClient:
 
     async def __aenter__(self):
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30),
+            # 代理偶发个别请求挂到 50s+:20/30s 超时会让长尾请求长期占住信号量,
+            # 实测正常页 p50 ~2s,10s 超时后重试比苦等整条长尾更快
+            timeout=aiohttp.ClientTimeout(total=10),
             connector=aiohttp.TCPConnector(
                 ssl=self._ssl, limit=self.concurrency, limit_per_host=self.concurrency
             ),
@@ -77,9 +81,15 @@ class HttpClient:
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
         )
         # 重要:图片等静态资源不需要 Cookie(避免无谓暴露),但 html 需要
+        # 代理会把个别请求 302 到 pub.mvc?pid=login&needIpAutoLogin=1,几秒后
+        # 用同一份 cookie 重试即可恢复;单次命中不足以判定会话失效。登录页重试
+        # 不占用网络重试次数,重试耗尽才通知并抛 AuthError。
         last_err: Exception | None = None
-        for attempt in range(self.retries):
+        net_attempts = 0
+        auth_hits = 0
+        while True:
             await self._throttle()
+            login_hit = False
             async with self._sem:
                 try:
                     async with self._session.get(
@@ -89,28 +99,42 @@ class HttpClient:
                             return ""
                         # 认证检测①: 被重定向到登录域(cookie 过期 → 302 -> login.xxx)
                         if _redirected_to_login(resp):
-                            await self.notifier.notify(
-                                "浙图爬虫:认证失效",
-                                f"访问 {url} 时检测到登录跳转,请重新登录",
+                            login_hit = True
+                            last_err = AuthError(
+                                f"认证失效于 {url}(被重定向到登录页)"
                             )
-                            raise AuthError(f"认证失效于 {url}(被重定向到登录页)")
-                        text = await resp.text()
-                        # 认证检测②: 响应内容呈现登录页(兜底)
-                        if self.auth.is_auth_fail(text):
-                            await self.notifier.notify(
-                                "浙图爬虫:认证失效",
-                                f"访问 {url} 时检测到登录跳转,请重新登录",
-                            )
-                            raise AuthError(f"认证失效于 {url}")
-                        if resp.status >= 400:
-                            raise RuntimeError(f"HTTP {resp.status} for {url}")
-                        return text
+                        else:
+                            text = await resp.text()
+                            # 认证检测②: 响应内容呈现登录页(兜底)
+                            if self.auth.is_auth_fail(text):
+                                login_hit = True
+                                last_err = AuthError(f"认证失效于 {url}")
+                            elif resp.status >= 400:
+                                raise RuntimeError(f"HTTP {resp.status} for {url}")
+                            else:
+                                return text
                 except AuthError:
-                    raise  # 认证失效,直接向上抛
+                    raise
                 except Exception as e:  # noqa: BLE001
                     last_err = e
-                    logger.debug("第 %s 次请求失败 %s: %s", attempt + 1, url, e)
-                    await asyncio.sleep(2**attempt)
+                    logger.debug("第 %s 次请求失败 %s: %s", net_attempts + 1, url, e)
+            if login_hit:
+                auth_hits += 1
+                if auth_hits >= self.auth_retries:
+                    await self.notifier.notify(
+                        "浙图爬虫:认证失效",
+                        f"访问 {url} 时检测到登录跳转,请重新登录",
+                    )
+                    raise last_err
+                # 被弹到 auto-login 页时,复用原连接可能仍停留在失效会话上
+                headers["Connection"] = "close"
+                logger.debug("第 %s 次请求命中登录页,重试 %s", auth_hits, url)
+                await asyncio.sleep(min(2**auth_hits, 10))
+                continue
+            net_attempts += 1
+            if net_attempts >= self.retries:
+                break
+            await asyncio.sleep(2 ** (net_attempts - 1))
         raise RuntimeError(f"请求重试耗尽: {url}: {last_err}")
 
     async def download(self, url: str, save_path: Path) -> bool:
