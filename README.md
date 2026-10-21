@@ -30,5 +30,5 @@
 
 ---
 
-- 认证依赖登录 cookie(`vpn358_sid`),失效时抛 `AuthError` 并经 Bark 推送通知;`scripts/login.py` 全自动登录(含验证码),可用 `--headless` 在后台运行
+- 认证依赖登录 cookie(`vpn358_sid`),失效时抛 `AuthError` 并经 Bark 推送通知;`scripts/login.py` 用纯 HTTP 调 SSO 接口完成登录,不需要浏览器
 - 数据断点续跑:各表以 `status` 列为状态机,`failed` 项可经 `scripts/retry_failed.py` 重置为 `pending` 后重试

@@ -29,7 +29,7 @@ class AuthManager:
     def _load(self):
         """从 cookies.json 加载 cookie,兼容两种格式:
         - 旧格式: {"cookies": {"name": "value"}}
-        - 新格式: [{"name": "...", "value": "...", "domain": ".zjlib.cn"}, ...]  (Playwright 导出)
+        - 新格式: [{"name": "...", "value": "...", "domain": ".zjlib.cn"}, ...]  (登录脚本导出)
         """
         if not self.cookies_file.exists():
             raise AuthError(
@@ -45,7 +45,7 @@ class AuthManager:
         self._cookie_by_domain: dict[str, dict[str, str]] = {}
 
         if isinstance(data, list):
-            # 新格式: Playwright 导出的 cookie 列表
+            # 新格式: 登录脚本导出的 cookie 列表
             for item in data:
                 name = item.get("name")
                 value = item.get("value")

@@ -47,7 +47,7 @@ STATUS_ORDER = ("pending", "done", "failed")
 LOG_MAX_LINES = 5000
 POLL_MS = 200
 AUTO_REFRESH_MS = 5000
-# 登录辅助脚本(同步 Playwright,弹真实浏览器),以子进程方式启动
+# 登录脚本(纯 HTTP,无需浏览器),以子进程方式启动
 LOGIN_SCRIPT = Path(__file__).resolve().parent / "scripts" / "login.py"
 
 
@@ -737,7 +737,7 @@ class App(tk.Tk):
         payload = {
             "username": username,
             "password": password,
-            "_说明": "登录辅助脚本(login.py)读取本文件自动填表。"
+            "_说明": "登录脚本(login.py)读取本文件自动登录。"
             "认证过期时爬虫会通知重新登录,重新执行登录脚本即可。",
         }
         if self._save_json(self._settings.secrets_dir / "credentials.json", payload):

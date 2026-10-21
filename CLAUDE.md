@@ -22,7 +22,7 @@ uv run cli.py issues 2014 2026 --end-month 7   # 阶段1: 枚举期次(2014~2026
 uv run cli.py boards             # 阶段2: 抓版面/位置/版面图(省略 --limit 处理全部 pending)
 uv run cli.py articles           # 阶段3: 抓报道正文+配图(省略 --limit 处理全部 pending)
 uv run cli.py boards --paperid n.D330100hzrb --limit 10   # 限量或限定报纸跑阶段2
-uv run scripts/login.py          # Playwright 登录: 自动填表/验证码/提交,保存 cookie
+uv run scripts/login.py          # 纯 HTTP 登录: 直接调 SSO 接口,保存 cookie
 ```
 
 `boards`/`articles` 阶段省略 `--limit` 即处理全部 pending 项;显式 `--limit N` 每轮限量、可分批续跑。
@@ -92,7 +92,7 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
   - `config.py` — `Settings`(frozen dataclass):所有运行时路径统一收口,支持环境变量覆盖(Docker 用 `NEWSPAPER_*` 注入)
 - [crawler/bootstrap.py](crawler/bootstrap.py) — 组合根:读配置、建适配器、注入服务,并负责收尾通知(正常完成 / 认证失效 / 异常中断;`import` 阶段不构造 HttpClient,也不推送)
 - [crawler/logging_config.py](crawler/logging_config.py) — 控制台 + 按日滚动文件双通道,幂等;`ProgressLogger` 用于高频事件节流(如报道落库)
-- [scripts/login.py](scripts/login.py) — Playwright 同步登录流程:打开 share 资源页 → 点"方正数字报"让 JS 弹出新标签页 → 自动填账号/选机构/填验证码/点登录 → 等 cookie 连续 15s 无变化(登录稳定)后保存全部 cookie。验证码由页面本地 GVerify 生成,答案存在 Vue 实例里,直接读取即可(登录接口不校验验证码)
+- [scripts/login.py](scripts/login.py) — 纯 HTTP 登录:`GET` SSO 登录页 → `POST` 账号密码拿 sign → `POST` 超星 cookie 同步接口种下 `.zjlib.cn` 会话 → `GET` vpn358 中转接口并跟随页内 JS 跳转到 apabi 落地页(写入 `vpn358_sid`)→ 保存全部 cookie。验证码由登录页本地生成并校验,登录请求不带验证码,所以无需浏览器或 OCR
 
 ### 认证与通知
 
