@@ -11,7 +11,7 @@
     // 参数与输出:
     //   - 每个任务通过 ${input:xxx} 提示输入命令行参数,留空则走程序默认
     //   - 爬取流水线(import/issues/boards/articles) 复用同一终端,便于持续观察进度
-    //   - login 纯 HTTP 登录,无需浏览器,独立终端并自动聚焦
+    //   - login 全自动完成(含验证码),独立终端并自动聚焦
     //   - status 输出表格,每次新建干净终端,不复用旧终端
     "version": "2.0.0",
     "tasks": [
@@ -74,7 +74,7 @@
 
         // ---------- scripts/ 辅助工具 ----------
         {
-            // 登录: 纯 HTTP 调用 SSO 接口,独立终端并自动聚焦
+            // 登录: 自动填表/验证码/提交,独立终端并自动聚焦
             "label": "login",
             "type": "shell",
             "command": "uv run scripts/login.py ${input:login-args}",

@@ -7,7 +7,7 @@ articles 循环守护:抓报道 → 认证失效自动重新登录 → 再抓 �
   1. 执行 `cli.py articles --concurrency N`(处理全部 pending)
   2. 退出码 0   → 本轮抓完,睡 --poll-seconds 秒再轮询(等新出现的 pending)
   3. 退出码非 0 → cli.py 仅在 AuthError 时非零退出 → 自动拉起
-                  `scripts/login.py` 重新登录,成功后自动回到步骤1
+                  `scripts/login.py --headless` 重新登录,成功后自动回到步骤1
 
 登录全自动完成(账号/密码/验证码/提交),无需人工介入。
 
@@ -77,7 +77,7 @@ def main() -> None:
                 f"[{now()}] articles 退出码 {code}(通常为登录过期)→ 拉起登录...",
                 flush=True,
             )
-            login_code = run(["scripts/login.py"])
+            login_code = run(["scripts/login.py", "--headless"])
             if login_code == 0:
                 continue  # 登录成功,回到 articles
 

@@ -2,61 +2,64 @@
 """
 浙图 SSO 登录脚本
 =================
-纯 HTTP 复刻浏览器登录链路,不需要浏览器:
-  1. 打开 SSO 登录页建立会话
-  2. POST 账号/密码,拿到 cookie 同步用的 sign
-  3. POST 超星 cookie 同步接口,种下 .zjlib.cn 会话 cookie
-  4. GET vpn358 中转接口,解析其中的 JS 跳转并跟随到 apabi 落地页,
-     此时写入 vpn358_sid
-  5. 保存全部 cookie 到 .secrets/cookies.json
+用 Playwright 打开浏览器,复刻手动登录链路:
+  1. 打开浙江图书馆 share 资源列表页
+  2. 点击 "方正数字报" -> JS 自动弹出新标签页(经 vpn358 中转)
+     - 未登录:新标签页落到 SSO 登录页,自动填账号/选机构/填验证码/点登录,
+       登录后站点自动回跳到方正数字报落地页
+     - 已登录:新标签页直接落到 apabi
+  3. 检测到方正数字报落地页后,等 cookie 连续 15s 无变化(登录稳定)再保存
+     全部 Cookies 到 .secrets/cookies.json
 
-登录页的验证码由 GVerify 在本地生成、本地比对,登录请求不带验证码,
-所以纯 HTTP 直接跳过它。
+验证码是页面本地用 GVerify 画在 canvas 上的,校验也在本地完成(登录请求根本
+不带验证码)。所以直接从 Vue 实例读取 GVerify 生成的那串字符填入即可,不需要
+OCR 或第三方识别服务。
+
+关键点:全程不强制 goto,由站点 JS 自己带过去,这样才能拿到
+vpn358_sid 会话 cookie(crawler/auth.py 认证依赖)。
 
 用法:
   uv run scripts/login.py
+  uv run scripts/login.py --headless
   uv run scripts/login.py --credentials .secrets/credentials.json --cookies .secrets/cookies.json
 """
 
 import argparse
-import asyncio
 import json
-import re
 import sys
+import time
 from pathlib import Path
 
-import aiohttp
+from playwright.sync_api import sync_playwright
 
 # ---- 常量 ----
-SHARE_ORIGIN = "https://share.zjlib.cn"
-LOGIN_PAGE_URL = f"{SHARE_ORIGIN}/sso/login/custom/zj-library2?refer={SHARE_ORIGIN}"
-LOGIN_POST_URL = f"{SHARE_ORIGIN}/sso/login/custom/zj-library-login2"
-COOKIE_SYNC_URL = "https://portal.chaoxing.com/entry/sso-login/cookie/sync"
-VPN358_URL = f"{SHARE_ORIGIN}/sso/api/auth/library/vpn358"
-# vpn358 中转的 refer:方正数字报落地页
-APABI_REFER = "https://apabi.com/zjlib/?pid=newspaper.index"
+# share 资源列表页(appId/typeId 指向 "方正数字报" 所在的资源列表)
+SHARE_URL = (
+    "https://share.zjlib.cn/engine2/general/more"
+    "?appId=1292055&typeId=4312537&currentBranch=0"
+    "&wfwfid=2120&pageId=35594&websiteId=28609&mhType=1"
+    "&publicId=5a4b97f974953111ed0a17754b327ca0790d"
+    "&mhEnc=7918f9663ed2443f881ad8f98aed56dd"
+)
+# 资源列表里 "方正数字报" 的标题元素(class=name)
+RESOURCE_NAME = "方正数字报"
+# SSO 登录页 URL 特征
+LOGIN_URL_MARKER = "sso/login"
 # apabi(方正数字报)代理域 URL 特征
 APABI_URL_MARKERS = ("apabi--com.elib.zyproxy.zjlib.cn",)
 # 登录后要确认的关键会话 cookie
 VPN_COOKIE = "vpn358_sid"
-# 浙江图书馆的 wfwfid(图书馆机构编号)
-WFW_FID = "2120"
-REQUEST_TIMEOUT = 60
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-)
-# 中转页里形如 window.location.href = "..."; 的跳转
-_JS_REDIRECT_RE = re.compile(r"""window\.location(?:\.href)?\s*=\s*["']([^"']+)["']""")
+# SSO 跳转后 cookie 需连续多少秒无变化,才认为登录真正完成、cookie 稳定
+COOKIE_STABLE_SECONDS = 15
+# 验证码错误时站点会重新生成验证码,允许自动重试的次数
+LOGIN_MAX_ATTEMPTS = 3
+# 提交登录后等待站点跳转到方正数字报的总超时(秒)
+LOGIN_REDIRECT_TIMEOUT = 90
 
 DEFAULT_CREDENTIALS = (
     Path(__file__).resolve().parent.parent / ".secrets" / "credentials.json"
 )
 DEFAULT_COOKIES = Path(__file__).resolve().parent.parent / ".secrets" / "cookies.json"
-
-
-class LoginError(RuntimeError):
-    """登录链路中可预期的失败(凭据错误、中转页异常等)"""
 
 
 def load_credentials(path: Path) -> dict:
@@ -70,127 +73,263 @@ def load_credentials(path: Path) -> dict:
     return {"username": username, "password": password}
 
 
-def extract_js_redirect(html: str) -> str | None:
-    """取中转页里 window.location 的跳转地址;没有则返回 None
+def select_province_and_library(page) -> None:
+    """自动选择 省本级 -> 浙江图书馆(两级下拉框)"""
+    jq_input = page.locator('input[name="jqtype"]')
+    jq_input.wait_for(state="visible", timeout=15_000)
+    jq_input.click()
+    province = page.locator(".select-list .one-title", has_text="省本级")
+    province.wait_for(state="visible", timeout=10_000)
+    province.click()
+    lib = page.locator('li.option[data-index="2120"]', has_text="浙江图书馆")
+    lib.wait_for(state="visible", timeout=10_000)
+    lib.click()
+    page.wait_for_function(
+        """(sel) => document.querySelector(sel)?.value?.includes('浙江图书馆')""",
+        arg='input[name="jqtype"]',
+        timeout=10_000,
+    )
 
-    页面里的 URL 用 JSON 字符串转义(\\/ 和 \\u0026),按 JSON 解码还原。
+
+def is_fangzheng_url(url: str) -> bool:
+    """方正数字报落地页 URL 特征:apabi 代理域,或 share 域上的 area 落地页
+
+    代理域的 pub.mvc?pid=login&needIpAutoLogin=1 是"还没登录成功"的中转页,
+    不能算落地,否则会把无效 cookie 当成登录结果保存。
     """
-    m = _JS_REDIRECT_RE.search(html)
-    if not m:
+    if any(m in url for m in APABI_URL_MARKERS):
+        return "pid=login" not in url
+    # SSO 登录成功后,落地页可能回跳到 share.zjlib.cn 的 area 页面
+    return "share.zjlib.cn/entry/area/" in url
+
+
+def is_proxy_login(url: str) -> bool:
+    """apabi 代理的 auto-login 中转页(pub.mvc?pid=login):尚未完成授权"""
+    return any(m in url for m in APABI_URL_MARKERS) and "pid=login" in url
+
+
+def is_fangzheng_page(page) -> bool:
+    """页面是否为"方正数字报":命中 URL 特征,或页面标题含"方正数字报"(URL 变动时兜底)"""
+    url = page.url or ""
+    if is_proxy_login(url):
+        return False
+    if is_fangzheng_url(url):
+        return True
+    try:
+        return "方正数字报" in (page.title() or "")
+    except Exception:  # noqa: BLE001  # 导航中标题不可读时按"不是"处理
+        return False
+
+
+def _cookies_snapshot(ctx) -> frozenset:
+    """当前 context 全部 cookie 的快照,用于检测 cookie 是否仍在变化"""
+    return frozenset((c["name"], c["domain"], c["value"]) for c in ctx.cookies())
+
+
+def _page_label(page) -> str:
+    try:
+        return f"{page.url} | {page.title()}"
+    except Exception:  # noqa: BLE001  # 导航中不可读时回退为 "(标题不可读)"
+        return f"{page.url} | (标题不可读)"
+
+
+def is_login(url: str) -> bool:
+    return LOGIN_URL_MARKER in url
+
+
+def read_captcha_code(page) -> str:
+    """读取 GVerify 本次生成的验证码
+
+    验证码由 /sso/assets/lib/gVerify.js 在本地 canvas 上绘制,答案存在页面
+    Vue 实例的 verifyCode.options.code 里;登录接口本身不接收验证码,只在
+    前端比对。所以直接读内存即可,无需 OCR 或识别服务。
+    """
+    code = page.evaluate("() => window.vm?.verifyCode?.options?.code || ''").strip()
+    if not code:
+        raise RuntimeError("未能从登录页读取验证码(GVerify 实例不可用)")
+    return code
+
+
+def login_error(page):
+    """登录页当前显示的错误信息;没有错误时返回 None"""
+    try:
+        loc = page.locator(".err-txt:visible")
+        if loc.count() == 0:
+            return None
+        text = loc.first.inner_text().strip()
+        return text or None
+    except Exception:  # noqa: BLE001  # 导航中页面不可读,按无错误处理
         return None
-    raw = m.group(1)
-    try:
-        return json.loads(f'"{raw}"')
-    except json.JSONDecodeError:
-        return raw.replace("\\/", "/")
 
 
-def is_apabi_url(url: str) -> bool:
-    return any(m in url for m in APABI_URL_MARKERS) and "pid=login" not in url
+def submit_login(page) -> str:
+    """读取验证码填入并点登录,返回本次填入的验证码"""
+    code = read_captcha_code(page)
+    page.locator(".ipt-code").fill(code)
+    page.locator("button.btn-big-blue").click()
+    return code
 
 
-async def _post_json(session, url: str, data: dict) -> dict:
-    async with session.post(url, data=data) as resp:
-        text = await resp.text()
-        if resp.status != 200:
-            raise LoginError(f"请求 {url} 失败: HTTP {resp.status}")
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        raise LoginError(f"接口 {url} 返回的不是 JSON: {text[:200]}") from e
+def wait_for_fangzheng(ctx, timeout: float):
+    """等站点跳转到方正数字报
 
-
-async def _login_async(cred: dict, cookies_path: Path) -> None:
-    jar = aiohttp.CookieJar(unsafe=True)  # 超星域会向 .zjlib.cn 种 cookie
-    async with aiohttp.ClientSession(
-        cookie_jar=jar,
-        headers={"User-Agent": USER_AGENT},
-        connector=aiohttp.TCPConnector(ssl=False),  # 站点 TLS 证书过期
-        timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
-    ) as session:
-        print("[1/4] 打开 SSO 登录页...")
-        async with session.get(LOGIN_PAGE_URL) as resp:
-            await resp.read()
-            if resp.status != 200:
-                raise LoginError(f"打开登录页失败: HTTP {resp.status}")
-
-        print("[2/4] 提交账号密码...")
-        data = await _post_json(
-            session,
-            LOGIN_POST_URL,
-            {
-                "account": cred["username"],
-                "password": cred["password"],
-                "wfwfid": WFW_FID,
-                "loginType": "2",
-            },
-        )
-        if not data.get("success"):
-            raise LoginError(f"登录失败: {data.get('message') or '账号或密码错误'}")
-        sign = (data.get("data") or {}).get("encryptedCookies") or ""
-        if not sign:
-            raise LoginError("登录接口未返回 cookie 同步凭据")
-
-        print("[3/4] 同步 SSO 会话 cookie...")
-        async with session.post(
-            COOKIE_SYNC_URL, data={"sign": sign, "url": SHARE_ORIGIN}
-        ) as resp:
-            await resp.read()
-            if resp.status != 200:
-                raise LoginError(f"同步 SSO cookie 失败: HTTP {resp.status}")
-        if not any(c.key == "p_auth_token" for c in jar):
-            raise LoginError("SSO cookie 同步未生效")
-
-        print("[4/4] 经 vpn358 中转进入方正数字报...")
-        async with session.get(
-            VPN358_URL, params={"wfwfid": WFW_FID, "refer": APABI_REFER}
-        ) as resp:
-            html = await resp.text()
-            if resp.status != 200:
-                raise LoginError(f"vpn358 中转失败: HTTP {resp.status}")
-        target = extract_js_redirect(html)
-        if not target:
-            raise LoginError("vpn358 中转页格式变化,未找到跳转地址")
-
-        async with session.get(target) as resp:
-            await resp.read()
-            final_url = str(resp.url)
-            if resp.status != 200 or not is_apabi_url(final_url):
-                raise LoginError(f"未进入方正数字报,当前页面: {final_url}")
-
-        cookies = [
-            {"name": c.key, "value": c.value, "domain": c["domain"]} for c in jar
-        ]
-        cookies.sort(key=lambda c: (c["domain"], c["name"]))
-        cookies_path.parent.mkdir(parents=True, exist_ok=True)
-        cookies_path.write_text(
-            json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        names = {c["name"] for c in cookies}
-        if VPN_COOKIE in names:
-            print(f"已保存 {len(cookies)} 个 cookie 到 {cookies_path}(含 {VPN_COOKIE})")
-        else:
-            print(
-                f"已保存 {len(cookies)} 个 cookie 到 {cookies_path}"
-                f"(提示: 未含 {VPN_COOKIE},爬虫认证可能失效)"
-            )
+    返回 (落地页, 错误信息):落地成功时错误信息为 None;登录被拒时落地页为
+    None 并带回页面错误文案;超时则两者都是 None。
+    """
+    deadline = time.time() + timeout
+    last_urls: list[str] = []
+    while time.time() < deadline:
+        for pg in ctx.pages:
+            if is_fangzheng_page(pg):
+                return pg, None
+            err = login_error(pg)
+            if err:
+                return None, err
+        urls = sorted(_page_label(pg) for pg in ctx.pages)
+        if urls != last_urls:
+            print("  标签页:", " ; ".join(urls) if urls else "(无)")
+            last_urls = urls
+        time.sleep(1)
+    return None, None
 
 
 def run_login(
     credentials_path: Path | str | None = None,
     cookies_path: Path | str | None = None,
+    headless: bool = False,
 ) -> None:
-    """执行 SSO 登录并保存全部 cookie 到 cookies_path"""
+    """
+    执行 SSO 登录并保存全部 cookie 到 cookies_path。
+
+    供 cli.py 的 login 子命令复用;也可直接运行本脚本调用。
+    """
     cred = load_credentials(
         Path(credentials_path) if credentials_path else DEFAULT_CREDENTIALS
     )
     cookies_path = Path(cookies_path) if cookies_path else DEFAULT_COOKIES
-    try:
-        asyncio.run(_login_async(cred, cookies_path))
-    except LoginError as e:
-        sys.exit(str(e))
-    except (TimeoutError, aiohttp.ClientError) as e:
-        sys.exit(f"登录请求失败: {e}")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless, channel="chromium")
+        ctx = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+            ),
+            ignore_https_errors=True,  # 站点 TLS 证书过期,需忽略才能正常加载
+        )
+        page = ctx.new_page()
+        page.goto(SHARE_URL, wait_until="domcontentloaded", timeout=60_000)
+        print(f"[1/6] 已打开浙江图书馆资源列表: {page.title()}")
+
+        # 步骤2: 点击 "方正数字报",监听新标签页(JS 自动弹出)
+        print("[2/6] 点击 方正数字报...")
+        with ctx.expect_page(timeout=30_000) as page_info:
+            page.locator("div.name", has_text=RESOURCE_NAME).first.click()
+        np = page_info.value
+
+        # 等待新标签页稳定:落到 SSO 登录页、代理 auto-login 中转页,或已登录的 apabi
+        np.wait_for_url(
+            lambda u: is_login(u) or is_proxy_login(u) or is_fangzheng_url(u),
+            timeout=45_000,
+        )
+
+        # ---- 分情况:未登录走完整登录流程,已登录直接取 cookie ----
+        if is_login(np.url):
+            print("[2/6] 需要登录,SSO 登录页已弹出")
+            np.locator(".ipt-code").wait_for(state="visible", timeout=15_000)
+
+            np.locator(".ipt-tel").fill(cred["username"])
+            np.locator(".ipt-pwd").fill(cred["password"])
+            select_province_and_library(np)
+            print(f"[3/6] 已填入账号 {cred['username']} 并选择 省本级 -> 浙江图书馆")
+
+            apabi_page = None
+            for attempt in range(1, LOGIN_MAX_ATTEMPTS + 1):
+                try:
+                    code = submit_login(np)
+                except RuntimeError as e:
+                    sys.exit(str(e))
+                print(
+                    f"[3/6] 已提交登录(验证码 {code},第 {attempt}/{LOGIN_MAX_ATTEMPTS} 次)"
+                )
+                # 给前端校验和 AJAX 留出时间,避免把上一轮的错误文案当成结果
+                time.sleep(2)
+                apabi_page, err = wait_for_fangzheng(ctx, LOGIN_REDIRECT_TIMEOUT)
+                if apabi_page is not None or err is None:
+                    break
+                print(f"  登录被拒: {err}")
+                # 只有验证码错误才重试,密码错误继续重试可能触发账号锁定
+                if "验证码" not in err or attempt == LOGIN_MAX_ATTEMPTS:
+                    break
+                print("  重新读取验证码后重试...")
+
+            if apabi_page is None:
+                print("提示: 登录后未自动进入方正数字报,当前标签页:")
+                for pg in ctx.pages:
+                    print("   -", _page_label(pg))
+                sys.exit("登录失败,请检查账号/密码是否正确")
+            apabi_page.bring_to_front()
+            print(f"[6/6] 登录成功,已进入方正数字报: {apabi_page.url}")
+        else:
+            apabi_page = np
+            apabi_page.bring_to_front()
+            if is_proxy_login(apabi_page.url or ""):
+                # 代理 auto-login 中转页:等它自己跳到真正的数字报页面,
+                # 否则保存下来的 cookie 无法访问报纸内容
+                print("[2/6] 已登录,等待代理完成 auto-login 跳转...")
+                try:
+                    apabi_page.wait_for_url(
+                        lambda u: is_fangzheng_url(u), timeout=60_000
+                    )
+                except Exception:  # noqa: BLE001
+                    sys.exit(
+                        "代理仍停留在登录页,登录未生效\n当前页面:"
+                        + _page_label(apabi_page)
+                    )
+            print("[2/6] 已登录,新标签页直接进入方正数字报")
+            print("[6/6] 已进入方正数字报")
+
+        # cookie 稳定检测:跳转后 vpn358_sid 等会话 cookie 可能还会刷新几次,
+        # 连续 COOKIE_STABLE_SECONDS 秒无变化才认为登录真正完成。以 cookie 自身
+        # 稳定性为准,比比对落地页 URL 更可靠(参数顺序/编码有差异也不会卡住)。
+        last_snapshot = _cookies_snapshot(ctx)
+        stable_since = time.time()
+        stable_deadline = time.time() + 120  # 总超时,防止登录未完成时无限等待
+        while time.time() < stable_deadline:
+            time.sleep(2)
+            snapshot = _cookies_snapshot(ctx)
+            if snapshot == last_snapshot:
+                if time.time() - stable_since >= COOKIE_STABLE_SECONDS:
+                    print(f"cookie 已稳定(连续 {COOKIE_STABLE_SECONDS}s 无变化)")
+                    break
+            else:
+                last_snapshot = snapshot
+                stable_since = time.time()
+        else:
+            print(
+                "注意: 等待 cookie 稳定超时(可能未完整落定,仍保存,靠 VPN_COOKIE 检查兜底)"
+            )
+
+        # 已进入方正数字报落地页,保存全部 cookie(所有标签页共享 context)
+        time.sleep(1)
+        cookies = ctx.cookies()
+        payload = [
+            {"name": c["name"], "value": c["value"], "domain": c["domain"]}
+            for c in cookies
+        ]
+        cookies_path.parent.mkdir(parents=True, exist_ok=True)
+        cookies_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        names = {c["name"] for c in payload}
+        if VPN_COOKIE in names:
+            print(f"已保存 {len(payload)} 个 cookie 到 {cookies_path}(含 {VPN_COOKIE})")
+        else:
+            print(
+                f"已保存 {len(payload)} 个 cookie 到 {cookies_path}(提示: 未含 {VPN_COOKIE},爬虫认证可能失效,建议重新登录)"
+            )
+
+        browser.close()
 
 
 if __name__ == "__main__":
@@ -205,5 +344,14 @@ if __name__ == "__main__":
         default=str(DEFAULT_COOKIES),
         help=f"Cookie 保存路径(默认 {DEFAULT_COOKIES})",
     )
+    ap.add_argument(
+        "--headless",
+        action="store_true",
+        help="不打开浏览器窗口(适合定时任务/服务器)",
+    )
     args = ap.parse_args()
-    run_login(credentials_path=args.credentials, cookies_path=args.cookies)
+    run_login(
+        credentials_path=args.credentials,
+        cookies_path=args.cookies,
+        headless=args.headless,
+    )
