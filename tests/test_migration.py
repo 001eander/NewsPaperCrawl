@@ -125,3 +125,17 @@ def test_new_db_has_content_path(tmp_path):
     cols = _cols(path)
     assert "content" not in cols
     assert "content_path" in cols
+
+
+def test_migration_adds_claim_columns(old_db):
+    """旧库 init 后补上认领列,既有数据保留"""
+    asyncio.run(_init_db(old_db))
+
+    con = sqlite3_connect(old_db)
+    try:
+        for table in ("issues", "articles"):
+            cols = {r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()}
+            assert {"claimed_by", "claimed_at"} <= cols
+        assert con.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 2
+    finally:
+        con.close()

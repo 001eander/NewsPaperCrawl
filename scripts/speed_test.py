@@ -38,7 +38,7 @@ def main():
     time.sleep(args.seconds)
     n2 = con.execute(count_sql, (args.status,)).fetchone()[0]
     pending = con.execute(
-        f"SELECT COUNT(*) FROM {args.table} WHERE status='pending'"
+        f"SELECT COUNT(*) FROM {args.table} WHERE status IN ('pending', 'processing')"
     ).fetchone()[0]
     con.close()
 

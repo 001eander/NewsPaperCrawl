@@ -6,7 +6,8 @@ articles 循环守护:抓报道 → 认证失效自动重新登录 → 再抓 �
 
   1. 执行 `cli.py articles --concurrency N`(处理全部 pending)
   2. 退出码 0   → 本轮抓完,睡 --poll-seconds 秒再轮询(等新出现的 pending)
-  3. 退出码非 0 → cli.py 仅在 AuthError 时非零退出 → 自动拉起
+  3. 退出码 2   → 另一个 articles 实例持有单实例锁,等待后重试
+  4. 其他非 0   → 通常为 AuthError → 自动拉起
                   `scripts/login.py --headless` 重新登录,成功后自动回到步骤1
 
 登录全自动完成(账号/密码/验证码/提交),无需人工介入。
@@ -23,6 +24,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# 与 cli.py 的 EXIT_ALREADY_RUNNING 一致:另一个 articles 进程持有单实例锁
+EXIT_ALREADY_RUNNING = 2
 
 
 def now() -> str:
@@ -71,6 +74,14 @@ def main() -> None:
                     flush=True,
                 )
                 time.sleep(args.poll_seconds)
+                continue
+
+            if code == EXIT_ALREADY_RUNNING:
+                print(
+                    f"[{now()}] 已有 articles 实例在运行,{args.retry_delay}s 后再试",
+                    flush=True,
+                )
+                time.sleep(args.retry_delay)
                 continue
 
             print(

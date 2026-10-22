@@ -27,7 +27,16 @@ class CrawlRepository(Protocol):
     async def pending_issues(
         self, paperid: str | None = None, limit: int | None = None
     ) -> list[Issue]:
-        """取待爬期次(可限定报纸)。limit=None 表示不限制数量"""
+        """只读查询 pending 期次(不认领)。limit=None 表示不限制数量"""
+        ...
+
+    async def claim_issues(
+        self,
+        paperid: str | None = None,
+        limit: int | None = None,
+        lease_seconds: int = 3600,
+    ) -> list[Issue]:
+        """原子认领 pending 期次并标记 processing;多进程不会拿到同一行"""
         ...
 
     async def set_issue_status(
@@ -53,7 +62,19 @@ class CrawlRepository(Protocol):
         ...
 
     async def pending_articles(self, limit: int | None = None) -> list[Article]:
-        """取待爬报道。limit=None 表示不限制数量"""
+        """只读查询 pending 报道(不认领)。limit=None 表示不限制数量"""
+        ...
+
+    async def claim_articles(
+        self,
+        limit: int | None = None,
+        lease_seconds: int = 3600,
+    ) -> list[Article]:
+        """原子认领 pending 报道并标记 processing;多进程不会拿到同一行"""
+        ...
+
+    async def release_claims(self) -> int:
+        """把本实例未完成的认领退回 pending,返回释放行数"""
         ...
 
     async def update_article_status(

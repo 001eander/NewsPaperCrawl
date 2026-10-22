@@ -3,7 +3,9 @@ SQLite 仓储(适配器层)
 ====================
 CrawlRepository 端口的本地实现:
 - 存报纸/期次/版面/报道 的元数据与爬取状态
-- status 字段作为状态机: pending / done / failed
+- status 字段作为状态机: pending / processing / done / failed
+- 取任务时在 BEGIN IMMEDIATE 事务里原子认领为 processing,多进程不会拿到同一行;
+  进程异常退出后,超过租约的 processing 行可被其他进程回收
 - 使用 aiosqlite 避免阻塞事件循环
 
 表结构:
@@ -15,6 +17,10 @@ CrawlRepository 端口的本地实现:
 """
 
 import logging
+import os
+import socket
+import time
+import uuid
 
 import aiosqlite
 
@@ -22,6 +28,10 @@ from ..domain.models import Article, Board, Issue, Paper, Status
 from .config import Settings
 
 logger = logging.getLogger(__name__)
+
+# 认领租约:进程崩溃后,processing 行最多滞留这么久再被其他进程回收。
+# 单批任务远短于该值,正常运行时不会与他人重叠。
+CLAIM_LEASE_SECONDS = 3600
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers (
@@ -37,7 +47,9 @@ CREATE TABLE IF NOT EXISTS papers (
 CREATE TABLE IF NOT EXISTS issues (
     paperid     TEXT NOT NULL,
     date        TEXT NOT NULL,          -- YYYY-MM-DD
-    status      TEXT DEFAULT 'pending', -- pending/done/failed
+    status      TEXT DEFAULT 'pending', -- pending/processing/done/failed
+    claimed_by  TEXT,                   -- 认领者(主机:pid:实例)
+    claimed_at  INTEGER,                -- 认领时间(epoch 秒)
     board_count INTEGER DEFAULT 0,
     error       TEXT,
     PRIMARY KEY (paperid, date)
@@ -69,6 +81,8 @@ CREATE TABLE IF NOT EXISTS articles (
     poly_points TEXT,                   -- 原始多边形坐标 JSON
     image_count  INTEGER DEFAULT 0,
     status       TEXT DEFAULT 'pending',
+    claimed_by   TEXT,
+    claimed_at   INTEGER,
     error        TEXT
 );
 
@@ -95,6 +109,8 @@ class SqliteRepository:
     def __init__(self, settings: Settings):
         self._path = settings.db_path
         self._db: aiosqlite.Connection | None = None
+        # 认领者标识:同一台机器上也区分进程/实例,便于释放只属于自己的认领
+        self._owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
     async def init(self) -> None:
         """初始化数据库连接(启用 WAL + busy_timeout,支持多进程并发)"""
@@ -103,6 +119,7 @@ class SqliteRepository:
         db.row_factory = aiosqlite.Row
         await db.executescript(SCHEMA)
         await _migrate_articles_schema(db)  # 旧库: articles.content -> content_path
+        await _migrate_claim_columns(db)  # 旧库: 补认领列
         # WAL 模式: 读写不互斥,多进程友好
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA busy_timeout=30000")  # 等锁最多 30s
@@ -179,7 +196,7 @@ class SqliteRepository:
     async def pending_issues(
         self, paperid: str | None = None, limit: int | None = None
     ) -> list[Issue]:
-        """取待爬取的期次(可限定报纸)。limit=None 表示不限制数量。"""
+        """只读查询 pending 期次(不认领)。limit=None 表示不限制数量。"""
         db = self._conn()
         sql = "SELECT * FROM issues WHERE status='pending'"
         args: list = []
@@ -190,31 +207,51 @@ class SqliteRepository:
             sql += " LIMIT ?"
             args.append(limit)
         cur = await db.execute(sql, tuple(args))
-        return [
-            Issue(
-                paperid=r["paperid"],
-                date=r["date"],
-                status=Status(r["status"]),
-                board_count=r["board_count"],
-                error=r["error"],
-            )
-            for r in await cur.fetchall()
+        return [_issue_from_row(r) for r in await cur.fetchall()]
+
+    async def claim_issues(
+        self,
+        paperid: str | None = None,
+        limit: int | None = None,
+        lease_seconds: int = CLAIM_LEASE_SECONDS,
+    ) -> list[Issue]:
+        """原子认领 pending 期次(可限定报纸);limit=None 表示不限制数量。"""
+        now = int(time.time())
+        args: list = [
+            Status.PROCESSING,
+            self._owner,
+            now,
+            Status.PENDING,
+            Status.PROCESSING,
+            now - lease_seconds,
         ]
+        sql = """
+            UPDATE issues SET status=?, claimed_by=?, claimed_at=?
+             WHERE (paperid, date) IN (
+                   SELECT paperid, date FROM issues
+                    WHERE (status=? OR (status=? AND (claimed_at IS NULL OR claimed_at < ?)))
+            """
+        if paperid:
+            sql += " AND paperid=?"
+            args.append(paperid)
+        sql += """
+                    ORDER BY date, paperid
+                    LIMIT ?
+             )
+            RETURNING *
+        """
+        args.append(limit if limit is not None else -1)
+        return [_issue_from_row(r) for r in await self._claim(sql, args)]
 
     async def set_issue_status(
         self, paperid: str, date: str, status: Status, error: str | None = None
     ) -> None:
         db = self._conn()
-        if error:
-            await db.execute(
-                "UPDATE issues SET status=?, error=? WHERE paperid=? AND date=?",
-                (status, error, paperid, date),
-            )
-        else:
-            await db.execute(
-                "UPDATE issues SET status=? WHERE paperid=? AND date=?",
-                (status, paperid, date),
-            )
+        await db.execute(
+            "UPDATE issues SET status=?, error=?, claimed_by=NULL, claimed_at=NULL "
+            "WHERE paperid=? AND date=?",
+            (status, error, paperid, date),
+        )
         await db.commit()
 
     # ---- 版面 ----
@@ -314,7 +351,7 @@ class SqliteRepository:
         await db.commit()
 
     async def pending_articles(self, limit: int | None = None) -> list[Article]:
-        """取待爬取的报道。limit=None 表示不限制数量。"""
+        """只读查询 pending 报道(不认领)。limit=None 表示不限制数量。"""
         db = self._conn()
         sql = "SELECT * FROM articles WHERE status='pending'"
         args: list = []
@@ -322,26 +359,35 @@ class SqliteRepository:
             sql += " LIMIT ?"
             args.append(limit)
         cur = await db.execute(sql, tuple(args))
-        return [
-            Article(
-                metaid=r["metaid"],
-                paperid=r["paperid"],
-                date=r["date"],
-                board_metaid=r["board_metaid"],
-                title=r["title"],
-                content_path=r["content_path"],
-                source_meta=r["source_meta"],
-                bbox_x=r["bbox_x"],
-                bbox_y=r["bbox_y"],
-                bbox_w=r["bbox_w"],
-                bbox_h=r["bbox_h"],
-                poly_points=r["poly_points"],
-                image_count=r["image_count"],
-                status=Status(r["status"]),
-                error=r["error"],
-            )
-            for r in await cur.fetchall()
+        return [_article_from_row(r) for r in await cur.fetchall()]
+
+    async def claim_articles(
+        self,
+        limit: int | None = None,
+        lease_seconds: int = CLAIM_LEASE_SECONDS,
+    ) -> list[Article]:
+        """原子认领 pending 报道;limit=None 表示不限制数量。"""
+        now = int(time.time())
+        sql = """
+            UPDATE articles SET status=?, claimed_by=?, claimed_at=?
+             WHERE metaid IN (
+                   SELECT metaid FROM articles
+                    WHERE status=? OR (status=? AND (claimed_at IS NULL OR claimed_at < ?))
+                    ORDER BY date, metaid
+                    LIMIT ?
+             )
+            RETURNING *
+        """
+        args = [
+            Status.PROCESSING,
+            self._owner,
+            now,
+            Status.PENDING,
+            Status.PROCESSING,
+            now - lease_seconds,
+            limit if limit is not None else -1,
         ]
+        return [_article_from_row(r) for r in await self._claim(sql, args)]
 
     async def update_article_status(
         self,
@@ -367,15 +413,79 @@ class SqliteRepository:
             }.items()
             if v is not None
         }
-        if fields:
-            cols = ", ".join(f"{k}=?" for k in fields)
-            sql = f"UPDATE articles SET {cols}, status=? WHERE metaid=?"
-            await db.execute(sql, (*fields.values(), status, metaid))
-        else:
-            await db.execute(
-                "UPDATE articles SET status=? WHERE metaid=?", (status, metaid)
-            )
+        cols = ", ".join(f"{k}=?" for k in fields)
+        sets = f"{cols}, " if cols else ""
+        await db.execute(
+            f"UPDATE articles SET {sets}status=?, claimed_by=NULL, claimed_at=NULL "
+            "WHERE metaid=?",
+            (*fields.values(), status, metaid),
+        )
         await db.commit()
+
+    # ---- 认领 ----
+
+    async def release_claims(self) -> int:
+        """把本实例尚未完成的认领退回 pending(取消/异常退出时用)。"""
+        db = self._conn()
+        released = 0
+        for table in ("issues", "articles"):
+            cur = await db.execute(
+                f"UPDATE {table} SET status=?, claimed_by=NULL, claimed_at=NULL "
+                "WHERE claimed_by=? AND status=?",
+                (Status.PENDING, self._owner, Status.PROCESSING),
+            )
+            released += cur.rowcount
+        await db.commit()
+        return released
+
+    async def _claim(self, sql: str, args: list) -> list[aiosqlite.Row]:
+        """
+        在 IMMEDIATE 事务里执行认领 UPDATE ... RETURNING。
+
+        IMMEDIATE 先拿写锁再求值子查询,两个进程不会读到同一批 pending;
+        后到者等锁(busy_timeout)后看到的是前者已提交的 processing 行。
+        """
+        db = self._conn()
+        await db.commit()  # 结束可能存在的隐式事务,BEGIN 不能在事务内执行
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cur = await db.execute(sql, tuple(args))
+            rows = await cur.fetchall()
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+        return rows
+
+
+def _issue_from_row(r: aiosqlite.Row) -> Issue:
+    return Issue(
+        paperid=r["paperid"],
+        date=r["date"],
+        status=Status(r["status"]),
+        board_count=r["board_count"],
+        error=r["error"],
+    )
+
+
+def _article_from_row(r: aiosqlite.Row) -> Article:
+    return Article(
+        metaid=r["metaid"],
+        paperid=r["paperid"],
+        date=r["date"],
+        board_metaid=r["board_metaid"],
+        title=r["title"],
+        content_path=r["content_path"],
+        source_meta=r["source_meta"],
+        bbox_x=r["bbox_x"],
+        bbox_y=r["bbox_y"],
+        bbox_w=r["bbox_w"],
+        bbox_h=r["bbox_h"],
+        poly_points=r["poly_points"],
+        image_count=r["image_count"],
+        status=Status(r["status"]),
+        error=r["error"],
+    )
 
 
 async def _migrate_articles_schema(db: aiosqlite.Connection) -> None:
@@ -394,3 +504,22 @@ async def _migrate_articles_schema(db: aiosqlite.Connection) -> None:
         await db.execute("UPDATE articles SET content_path = NULL")
         await db.commit()
         logger.info("articles.content 已迁移为 articles.content_path")
+
+
+async def _migrate_claim_columns(db: aiosqlite.Connection) -> None:
+    """既有库补认领列(幂等)。表名来自固定白名单,不接受外部输入。"""
+    # 多个阶段可能同时启动:先拿写锁再检查列,避免两边都读到缺列后重复 ALTER
+    await db.commit()
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        for table in ("issues", "articles"):
+            cur = await db.execute(f"PRAGMA table_info({table})")
+            cols = {r["name"] for r in await cur.fetchall()}
+            if "claimed_by" not in cols:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN claimed_by TEXT")
+            if "claimed_at" not in cols:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN claimed_at INTEGER")
+        await db.commit()
+    except BaseException:
+        await db.rollback()
+        raise

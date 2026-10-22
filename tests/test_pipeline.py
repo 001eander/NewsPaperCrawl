@@ -85,6 +85,7 @@ class FakeRepo:
         self.board_status: list[tuple[str, Status, str | None, str | None]] = []
         self.added_articles: list[Article] = []
         self.article_status: list[dict] = []
+        self.released_claims = 0
 
     async def get_papers(self) -> list[Paper]:
         return self.papers
@@ -97,6 +98,17 @@ class FakeRepo:
         self, paperid: str | None = None, limit: int | None = None
     ) -> list[Issue]:
         return self.issues
+
+    async def claim_issues(
+        self,
+        paperid: str | None = None,
+        limit: int | None = None,
+        lease_seconds: int = 3600,
+    ) -> list[Issue]:
+        pool = [i for i in self.issues if paperid is None or i.paperid == paperid]
+        taken = pool if limit is None else pool[:limit]
+        self.issues = [i for i in self.issues if i not in taken]
+        return taken
 
     async def set_issue_status(
         self, paperid: str, date: str, status: Status, error: str | None = None
@@ -120,6 +132,17 @@ class FakeRepo:
 
     async def pending_articles(self, limit: int | None = None) -> list[Article]:
         return self.articles
+
+    async def claim_articles(
+        self, limit: int | None = None, lease_seconds: int = 3600
+    ) -> list[Article]:
+        taken = self.articles if limit is None else self.articles[:limit]
+        self.articles = [a for a in self.articles if a not in taken]
+        return taken
+
+    async def release_claims(self) -> int:
+        self.released_claims += 1
+        return 0
 
     async def update_article_status(
         self,

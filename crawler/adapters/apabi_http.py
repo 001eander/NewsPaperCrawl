@@ -100,9 +100,7 @@ class HttpClient:
                         # 认证检测①: 被重定向到登录域(cookie 过期 → 302 -> login.xxx)
                         if _redirected_to_login(resp):
                             login_hit = True
-                            last_err = AuthError(
-                                f"认证失效于 {url}(被重定向到登录页)"
-                            )
+                            last_err = AuthError(f"认证失效于 {url}(被重定向到登录页)")
                         else:
                             text = await resp.text()
                             # 认证检测②: 响应内容呈现登录页(兜底)

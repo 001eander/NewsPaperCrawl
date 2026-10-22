@@ -17,9 +17,13 @@ import argparse
 import asyncio
 import logging
 
+from crawler.adapters.instance_lock import AlreadyRunningError
 from crawler.bootstrap import run_stage
 from crawler.domain.exceptions import AuthError
 from crawler.logging_config import setup_logging
+
+# 与 AuthError(1)区分:循环脚本据此判断无需重新登录
+EXIT_ALREADY_RUNNING = 2
 
 
 def main():
@@ -77,6 +81,9 @@ def main():
     kwargs = {k: v for k, v in vars(args).items() if k != "stage" and v is not None}
     try:
         asyncio.run(run_stage(args.stage, **kwargs))
+    except AlreadyRunningError as e:
+        logging.getLogger(__name__).error("%s", e)
+        raise SystemExit(EXIT_ALREADY_RUNNING) from None
     except AuthError as e:
         # 认证失效:已由 run_stage() 推送 Bark,这里给出可操作提示并以非零码退出
         # (便于 cron/systemd 感知失败)

@@ -81,7 +81,8 @@ def sample(con: sqlite3.Connection) -> dict[str, Snap]:
         result[stage] = Snap(
             done=counts.get("done", 0),
             total=sum(counts.values()),
-            pending=counts.get("pending", 0),
+            # processing 是运行中的临时认领,仍算待处理
+            pending=counts.get("pending", 0) + counts.get("processing", 0),
         )
     return result
 

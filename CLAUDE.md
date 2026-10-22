@@ -51,7 +51,9 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 | 2 | `boards` | `boards` 表 + 版面图(JPG)+ 位置 JSON;解析 `<map>` area 得报道 bbox → 写 `articles` 表 |
 | 3 | `articles` | `articles` 表标 done + 正文 `content.json` + 配图(JPG) |
 
-状态机:每个表都有 `status` 列(`pending/done/failed`),每阶段只取 `pending` 项处理。
+状态机:每个表都有 `status` 列(`pending/processing/done/failed`),每阶段只取 `pending` 项处理。`processing` 是运行中的临时认领:服务层按小批 `claim_*` 原子认领,多个进程共享同一 pending 队列时不会重复抓同一行;崩溃后超过 1 小时租约的认领可被回收,正常退出/取消则由 `release_claims()` 立即退回。
+
+单实例保护:同一阶段启动时在数据库旁加文件锁(`crawl.db.{stage}.lock`),已有进程在跑时后启动者以退出码 2 结束;`scripts/run_articles_loop.py` 遇到退出码 2 会等待后重试,不会误触发重新登录。
 
 ### 数据双存储(重要约定)
 
@@ -85,7 +87,8 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
   - `apabi_parser.py` — 纯函数 HTML/XML 解析(BeautifulSoup + 正则)与全部 URL 构造(`build_*` 系列)。**全部基于文本解析,不依赖浏览器**;解析逻辑是"浏览器验证过"的固化成代码
   - `apabi_http.py` — aiohttp 异步会话:并发限速、重试(指数退避)、cookie 注入、认证失效检测(重定向到登录域 / 响应含登录页特征)
   - `cookie_auth.py` — 加载 cookie(兼容 Playwright 导出的 list 格式与旧 dict 格式,按 domain 匹配注入);失效判定委托领域规则
-  - `sqlite_repo.py` — 全部 SQLite 操作与表结构(`SCHEMA`);含旧库迁移(articles.content → content_path,幂等)
+  - `sqlite_repo.py` — 全部 SQLite 操作与表结构(`SCHEMA`);含旧库迁移(articles.content → content_path、补认领列,幂等);`claim_issues`/`claim_articles` 在 `BEGIN IMMEDIATE` 事务里原子认领
+  - `instance_lock.py` — 同阶段单实例文件锁(Windows `msvcrt` / POSIX `flock`),进程退出自动释放
   - `bark.py` — Bark 手机推送,未配置时静默跳过(推送必须 await 完成,见本节末)
   - `fs_storage.py` — 正文 JSON / 位置 JSON 落盘到 `DATA_DIR`
   - `paperlist_csv.py` — 报纸清单 CSV → `domain.Paper` 列表

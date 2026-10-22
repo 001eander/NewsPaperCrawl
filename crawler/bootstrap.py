@@ -16,6 +16,7 @@ from .adapters.bark import BarkNotifier
 from .adapters.config import Settings
 from .adapters.cookie_auth import AuthManager
 from .adapters.fs_storage import FileContentStore
+from .adapters.instance_lock import InstanceLock
 from .adapters.paperlist_csv import load_papers
 from .adapters.sqlite_repo import SqliteRepository
 from .domain.exceptions import AuthError
@@ -42,6 +43,13 @@ async def run_stage(stage: str, **kwargs) -> None:
         logger.info("阶段0 完成,导入报纸 %s", n)
         return
 
+    # 同一阶段同时只允许一个爬取进程;锁随进程退出自动释放
+    lock_path = settings.db_path.with_name(f"{settings.db_path.name}.{stage}.lock")
+    with InstanceLock(lock_path):
+        await _run_crawl_stage(stage, settings, kwargs)
+
+
+async def _run_crawl_stage(stage: str, settings: Settings, kwargs: dict) -> None:
     repo = SqliteRepository(settings)
     notifier = BarkNotifier(settings.secrets_dir / "bark.json")
     # CLI --concurrency 未给时(被 cli.py 过滤掉)回落环境变量/默认;max(1,...) 挡掉 0

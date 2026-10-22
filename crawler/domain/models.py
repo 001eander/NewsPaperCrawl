@@ -11,7 +11,9 @@
   ParsedArticle    报道页解析结果(标题 + 元信息 + 保序 blocks)
   ImageResult      单张配图的下载结果
 
-status 字段为状态机: pending / done / failed(Status 枚举,值即 DB 存储串)。
+status 字段为状态机: pending / processing / done / failed(Status 枚举,值即 DB
+存储串)。processing 是认领中的临时状态:多个进程可同时消费 pending 队列,
+每行只会被一个进程认领。
 """
 
 from dataclasses import dataclass, field
@@ -20,6 +22,7 @@ from enum import StrEnum
 
 class Status(StrEnum):
     PENDING = "pending"
+    PROCESSING = "processing"
     DONE = "done"
     FAILED = "failed"
 

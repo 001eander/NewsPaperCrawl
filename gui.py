@@ -36,6 +36,7 @@ from typing import Any
 
 from crawler.adapters.bark import BarkNotifier
 from crawler.adapters.config import Settings
+from crawler.adapters.instance_lock import AlreadyRunningError
 from crawler.bootstrap import run_stage
 from crawler.domain.exceptions import AuthError
 from crawler.logging_config import setup_logging
@@ -89,7 +90,8 @@ class StatusQueries:
                     f"SELECT status, COUNT(*) AS n FROM {table} GROUP BY status"
                 )
                 for status, n in cur.fetchall():
-                    counts[status] = n
+                    # processing 是运行中的临时认领,统计上并入 pending
+                    counts["pending" if status == "processing" else status] += n
                 rows.append(
                     {
                         "stage": table,
@@ -125,7 +127,7 @@ class StatusQueries:
                     bucket = per.setdefault(paperid, {}).setdefault(
                         table, dict.fromkeys(STATUS_ORDER, 0)
                     )
-                    bucket[status] = n
+                    bucket["pending" if status == "processing" else status] += n
         finally:
             conn.close()
         rows = []
@@ -218,6 +220,8 @@ class CrawlRunner:
             loop.run_until_complete(self._task)
         except asyncio.CancelledError:
             outcome, message = "stopped", "已被用户停止"
+        except AlreadyRunningError as e:
+            outcome, message = "busy", str(e)
         except AuthError as e:
             outcome, message = "auth", str(e)
         except Exception as e:  # noqa: BLE001
@@ -461,6 +465,8 @@ class App(tk.Tk):
                 f"登录状态失效: {message}\n\n"
                 "请点击运行页顶部的【登录】按钮重新登录,完成后再运行阶段。",
             )
+        elif outcome == "busy":
+            messagebox.showinfo("已有实例", message)
         elif outcome == "error":
             messagebox.showerror("运行出错", f"阶段 {stage} 异常中断:\n{message}")
         self._refresh_status()

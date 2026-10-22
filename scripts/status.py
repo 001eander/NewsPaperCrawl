@@ -2,7 +2,8 @@
 """
 爬取进度统计脚本
 ================
-输出 issues / boards / articles 三张表的完成状况(pending/done/failed)。
+输出 issues / boards / articles 三张表的完成状况(pending/done/failed;
+运行中的 processing 计入 pending)。
 
 用法:
   uv run scripts/status.py               # 三表概览(总数/完成/待处理/失败 + 进度条)
@@ -64,7 +65,9 @@ async def stage_counts(db: aiosqlite.Connection, table: str) -> dict[str, int]:
     cur = await db.execute(f"SELECT status, COUNT(*) AS n FROM {table} GROUP BY status")
     counts = {s: 0 for s in STATUS_ORDER}
     for row in await cur.fetchall():
-        counts[row["status"]] = row["n"]
+        # processing 是运行中的临时认领,统计上并入 pending
+        status = "pending" if row["status"] == "processing" else row["status"]
+        counts[status] += row["n"]
     return counts
 
 
@@ -114,7 +117,8 @@ async def print_by_paper(db: aiosqlite.Connection) -> None:
         for row in await cur.fetchall():
             bucket = per_paper.setdefault(row["paperid"], {})
             table_bucket = bucket.setdefault(table, {s: 0 for s in STATUS_ORDER})
-            table_bucket[row["status"]] = row["n"]
+            status = "pending" if row["status"] == "processing" else row["status"]
+            table_bucket[status] += row["n"]
 
     # 单元格只含 ASCII(paperid + done/total),列宽用 len() 即可;
     # 中文报纸名单独放行尾,不参与列对齐

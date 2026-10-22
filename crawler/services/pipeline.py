@@ -109,8 +109,8 @@ class CrawlService:
         concurrency: int | None = None,
     ) -> int:
         """处理待爬期次:抓版面列表、版面位置、下载版面图。返回处理期次数。"""
-        issues = await self._repo.pending_issues(paperid, limit)
         processed = 0
+        attempted = 0
         # 每期内部还会摊开到各版面(http 适配器已全局封顶),外批保守取小,避免峰值协程过多
         batch_size = max(concurrency or self.concurrency, 4)
 
@@ -131,7 +131,19 @@ class CrawlService:
                     paperid_i, date_i, Status.FAILED, str(e)
                 )
 
-        await _gather_in_batches(issues, one_issue, batch_size)
+        try:
+            while limit is None or attempted < limit:
+                size = (
+                    batch_size if limit is None else min(batch_size, limit - attempted)
+                )
+                issues = await self._repo.claim_issues(paperid, size)
+                if not issues:
+                    break
+                attempted += len(issues)
+                await _gather_in_batches(issues, one_issue, batch_size)
+        finally:
+            # 取消/认证失效时把本批未完成的认领退回,重启后无需等租约过期
+            await self._repo.release_claims()
         return processed
 
     async def _crawl_one_issue(self, paperid: str, date_i: str) -> bool:
@@ -227,8 +239,8 @@ class CrawlService:
         self, limit: int | None = None, concurrency: int | None = None
     ) -> int:
         """处理待爬报道:抓报道页、下载配图、写正文 JSON。返回处理报道数。"""
-        articles = await self._repo.pending_articles(limit)
         processed = 0
+        attempted = 0
         # 单篇 worker 轻量(正文 1 请求 + 至多几张配图),批可放大;http 适配器已全局封顶
         batch_size = max((concurrency or self.concurrency) * 2, 100)
 
@@ -246,7 +258,19 @@ class CrawlService:
                     metaid, Status.FAILED, error=str(e)
                 )
 
-        await _gather_in_batches(articles, one_article, batch_size)
+        try:
+            while limit is None or attempted < limit:
+                size = (
+                    batch_size if limit is None else min(batch_size, limit - attempted)
+                )
+                articles = await self._repo.claim_articles(size)
+                if not articles:
+                    break
+                attempted += len(articles)
+                await _gather_in_batches(articles, one_article, batch_size)
+        finally:
+            # 取消/认证失效时把本批未完成的认领退回,重启后无需等租约过期
+            await self._repo.release_claims()
         return processed
 
     async def _crawl_one_article(self, art: Article) -> None:
