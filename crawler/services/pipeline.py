@@ -44,7 +44,7 @@ class CrawlService:
         http: HttpGateway,
         repo: CrawlRepository,
         store: ContentStore,
-        concurrency: int = 8,
+        concurrency: int = 16,
     ):
         self._http = http
         self._repo = repo

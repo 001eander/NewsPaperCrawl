@@ -28,7 +28,7 @@ class HttpClient:
         self,
         auth: AuthProvider,
         notifier: Notifier,
-        concurrency: int = 8,
+        concurrency: int = 16,
         img_concurrency: int = 6,
         min_delay: float = 0.3,
         max_delay: float = 1.0,
@@ -58,8 +58,12 @@ class HttpClient:
             # 代理偶发个别请求挂到 50s+:20/30s 超时会让长尾请求长期占住信号量,
             # 实测正常页 p50 ~2s,10s 超时后重试比苦等整条长尾更快
             timeout=aiohttp.ClientTimeout(total=10),
+            # 连接池要同时容纳 HTML 与图片两套信号量,否则池上限会变成实际总并发,
+            # 图片高峰期占满连接后 HTML 只能排队,img_concurrency 形同虚设
             connector=aiohttp.TCPConnector(
-                ssl=self._ssl, limit=self.concurrency, limit_per_host=self.concurrency
+                ssl=self._ssl,
+                limit=self.concurrency + self.img_concurrency,
+                limit_per_host=self.concurrency + self.img_concurrency,
             ),
         )
         return self

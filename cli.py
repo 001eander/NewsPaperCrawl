@@ -42,7 +42,7 @@ def main():
         "--concurrency",
         type=int,
         default=None,
-        help="HTTP 并发上限(默认取环境变量 NEWSPAPER_CONCURRENCY,再默认 8)",
+        help="HTTP 并发上限(默认取环境变量 NEWSPAPER_CONCURRENCY,再默认 16)",
     )
 
     p_boards = sub.add_parser("boards", help="抓版面")
@@ -57,7 +57,7 @@ def main():
         "--concurrency",
         type=int,
         default=None,
-        help="HTTP 并发上限(默认取环境变量 NEWSPAPER_CONCURRENCY,再默认 8)",
+        help="HTTP 并发上限(默认取环境变量 NEWSPAPER_CONCURRENCY,再默认 16)",
     )
 
     p_articles = sub.add_parser("articles", help="抓报道")
@@ -71,7 +71,7 @@ def main():
         "--concurrency",
         type=int,
         default=None,
-        help="HTTP 并发上限(默认取环境变量 NEWSPAPER_CONCURRENCY,再默认 8)",
+        help="HTTP 并发上限(默认取环境变量 NEWSPAPER_CONCURRENCY,再默认 16)",
     )
 
     args = p.parse_args()
