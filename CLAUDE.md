@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 关键特性:
 - **认证依赖登录 cookie**(SSO 经 vpn358 中转,`vpn358_sid` 是关键会话 cookie),cookie 过期时爬虫抛 `AuthError` 并推 Bark 通知
 - **断点续跑**:所有阶段以 SQLite 的 `status` 列为状态机,可反复执行、跳过已完成项
-- **礼貌限速**:并发信号量 + 每次请求前 0.3~1.0s 随机延迟,连接忽略 HTTPS 证书校验(站点 TLS 证书过期)
+- **并发限流**:并发信号量控制请求数,连接忽略 HTTPS 证书校验(站点 TLS 证书过期)
 
 ## 常用命令
 
@@ -85,7 +85,7 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 - [crawler/services/pipeline.py](crawler/services/pipeline.py) — 服务层:`CrawlService` 编排四阶段,只依赖 domain 规则、三个端口与并发度
 - [crawler/adapters/](crawler/adapters/) — 适配器层,端口的具体实现:
   - `apabi_parser.py` — 纯函数 HTML/XML 解析(BeautifulSoup + 正则)与全部 URL 构造(`build_*` 系列)。**全部基于文本解析,不依赖浏览器**;解析逻辑是"浏览器验证过"的固化成代码
-  - `apabi_http.py` — aiohttp 异步会话:并发限速、重试(指数退避)、cookie 注入、认证失效检测(重定向到登录域 / 响应含登录页特征)
+  - `apabi_http.py` — aiohttp 异步会话:并发限流、重试(指数退避)、cookie 注入、认证失效检测(重定向到登录域 / 响应含登录页特征)
   - `cookie_auth.py` — 加载 cookie(兼容 Playwright 导出的 list 格式与旧 dict 格式,按 domain 匹配注入);失效判定委托领域规则
   - `sqlite_repo.py` — 全部 SQLite 操作与表结构(`SCHEMA`);含旧库迁移(articles.content → content_path、补认领列,幂等);`claim_issues`/`claim_articles` 在 `BEGIN IMMEDIATE` 事务里原子认领
   - `instance_lock.py` — 同阶段单实例文件锁(Windows `msvcrt` / POSIX `flock`),进程退出自动释放

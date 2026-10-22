@@ -3,14 +3,13 @@ APABI 站点 HTTP 适配器
 =====================
 实现 HttpGateway:
 - aiohttp 异步会话
-- 并发信号量 + 随机延迟(礼貌限速)
+- 并发信号量限流
 - 自动注入 cookie,检测认证失效(通知 + 抛 AuthError)
 - 证书校验关闭(对应浏览器的 --ignore-https-errors)
 """
 
 import asyncio
 import logging
-import random
 import ssl
 from pathlib import Path
 
@@ -30,8 +29,6 @@ class HttpClient:
         notifier: Notifier,
         concurrency: int = 16,
         img_concurrency: int = 6,
-        min_delay: float = 0.3,
-        max_delay: float = 1.0,
         retries: int = 3,
         auth_retries: int = 6,
     ):
@@ -39,8 +36,6 @@ class HttpClient:
         self.notifier = notifier
         self.concurrency = concurrency
         self.img_concurrency = img_concurrency
-        self.min_delay = min_delay
-        self.max_delay = max_delay
         self.retries = retries
         self.auth_retries = auth_retries
         self._sem = asyncio.Semaphore(concurrency)
@@ -72,10 +67,6 @@ class HttpClient:
         if self._session:
             await self._session.close()
 
-    async def _throttle(self):
-        """礼貌限速:随机延迟"""
-        await asyncio.sleep(random.uniform(self.min_delay, self.max_delay))
-
     async def get(self, url: str, **kwargs) -> str:
         """GET 并返回文本,带认证检测 + 重试"""
         headers = kwargs.pop("headers", {})
@@ -92,7 +83,6 @@ class HttpClient:
         net_attempts = 0
         auth_hits = 0
         while True:
-            await self._throttle()
             login_hit = False
             async with self._sem:
                 try:
@@ -153,7 +143,7 @@ class HttpClient:
                 try:
                     # 图片请求用短超时:CDN 上偶发挂起/缓慢的图若按正文 30s 超时,
                     # 重试 3 次会拖到 96s+,成为整批长尾。15s 足够下载正常图片。
-                    # 图片走独立低并发信号量,靠并发数保护 CDN,不再叠加随机延迟。
+                    # 图片走独立低并发信号量,靠并发数保护 CDN。
                     async with self._session.get(
                         url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
                     ) as resp:
