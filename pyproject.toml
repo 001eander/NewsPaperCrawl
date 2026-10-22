@@ -35,3 +35,6 @@ ignore = ["ASYNC230"]
 [tool.pytest.ini_options]
 # 项目未安装为包(uv sync --no-install-project),测试需从项目根导入 crawler
 pythonpath = ["."]
+# 只从 tests 收集:data/ 下有数十万爬取文件,从根目录递归扫描会让收集阶段卡住数分钟
+testpaths = ["tests"]
+norecursedirs = ["data", "logs", "archive", "docs", ".venv", ".git"]
