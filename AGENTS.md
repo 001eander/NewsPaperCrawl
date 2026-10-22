@@ -64,7 +64,7 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 - 报道正文: `data/articles/{code}/{YYYY}/{MM}/{DD}/{metaid_tail}/content.json`(保序 blocks,含图片的 `local_path`)
 - 报道配图: 同目录下 `{n}{suffix}.jpg`,文件名序号 = blocks 中 img 块 `index`
 
-其中 `code` = `paperid` 去掉 `n.` 前缀(如 `n.D330100hzrb` → `D330100hzrb`),`metaid_tail` = metaid 去掉 `nw.` 前缀。路径统一**相对 `DATA_DIR`** 存 DB,便于 Docker 卷可移植。
+其中 `code` = `paperid` 去掉 `n.` 前缀(如 `n.D330100hzrb` → `D330100hzrb`),`metaid_tail` = metaid 去掉 `nw.` 前缀。路径统一**相对 `DATA_DIR`** 存 DB,便于数据目录整体搬迁。
 
 ### metaid 编码规则(跨模块约定)
 
@@ -92,7 +92,7 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
   - `bark.py` — Bark 手机推送,未配置/失败返回 False(推送必须 await 完成,见本节末);用 certifi 根证书校验 TLS,CA 文件随 sidecar 打包
   - `fs_storage.py` — 正文 JSON / 位置 JSON 落盘到 `DATA_DIR`
   - `paperlist_csv.py` — 报纸清单 CSV → `domain.Paper` 列表
-  - `config.py` — `Settings`(frozen dataclass):所有运行时路径统一收口,支持环境变量覆盖(Docker 用 `NEWSPAPER_*` 注入)
+  - `config.py` — `Settings`(frozen dataclass):所有运行时路径统一收口,支持 `NEWSPAPER_*` 环境变量覆盖
 - [crawler/bootstrap.py](crawler/bootstrap.py) — 组合根:读配置、建适配器、注入服务,并负责收尾通知(正常完成 / 认证失效 / 异常中断;`import` 阶段不构造 HttpClient,也不推送)
 - [crawler/logging_config.py](crawler/logging_config.py) — 控制台 + 按日滚动文件双通道,幂等;`ProgressLogger` 用于高频事件节流(如报道落库)
 - [scripts/login.py](scripts/login.py) — Playwright 同步登录流程:打开 share 资源页 → 点"方正数字报"让 JS 弹出新标签页 → 自动填账号/选机构/填验证码/点登录 → 轮询到 `vpn358_sid` 后保存全部 cookie。验证码由页面本地 GVerify 生成,答案存在 Vue 实例里,读取前用 `wait_for_function` 等 code 初始化完成(登录接口不校验验证码)
@@ -106,17 +106,13 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 
 ## 桌面分发与更新
 
-桌面端是 Tauri 2 + Vite/TypeScript,不重写爬虫业务:`desktop/` 为界面,`src-tauri/` 为 Rust 窗口与 sidecar 生命周期管理,`crawler/desktop_core.py` 以 JSON Lines 处理状态、运行、取消、登录与配置。`tauri-plugin-single-instance` 限制单个桌面实例,重复启动只聚焦已有窗口;阶段锁仍负责 CLI/容器互斥。Python sidecar 由 PyInstaller onefile 构建,配置在 `packaging/`,按 Rust target triple 命名后放入 `src-tauri/binaries/`。
+桌面端是 Tauri 2 + Vite/TypeScript,不重写爬虫业务:`desktop/` 为界面,`src-tauri/` 为 Rust 窗口与 sidecar 生命周期管理,`crawler/desktop_core.py` 以 JSON Lines 处理状态、运行、取消、登录与配置。`tauri-plugin-single-instance` 限制单个桌面实例,重复启动只聚焦已有窗口;阶段锁仍负责 CLI 与桌面端互斥。Python sidecar 由 PyInstaller onefile 构建,配置在 `packaging/`,按 Rust target triple 命名后放入 `src-tauri/binaries/`。
 
-安装版由 Rust 注入 `NEWSPAPER_*` 与 `PLAYWRIGHT_BROWSERS_PATH`:数据、凭据和浏览器位于系统应用数据目录,日志位于应用日志目录,报纸清单来自 bundle 资源。源码 CLI/Docker 默认路径不变。Chromium 不随安装包分发,首次登录时下载到用户目录。不要自动迁移或覆盖源码版旧数据。
+安装版由 Rust 注入 `NEWSPAPER_*` 与 `PLAYWRIGHT_BROWSERS_PATH`:数据、凭据和浏览器位于系统应用数据目录,日志位于应用日志目录,报纸清单来自 bundle 资源。源码 CLI 默认路径不变。Chromium 不随安装包分发,首次登录时下载到用户目录。不要自动迁移或覆盖源码版旧数据。
 
 更新使用 `tauri-plugin-updater` + GitHub Release 的 `latest.json`;更新包必须验签,爬取/登录活动任务结束后才能关闭 sidecar 并安装。`.github/workflows/release.yml` 分别构建 Windows x64、macOS ARM64/Intel,publish job 汇总三平台产物生成唯一更新清单。更新私钥不得提交,公钥在 `src-tauri/tauri.conf.json`。
 
 桌面常用命令:`npm ci`、`npm run sidecar`、`npm run tauri dev`、`npm test`、`npm run build`、`npm run check-versions`、`npm run tauri build`;Rust 检查使用 `cargo fmt/clippy/test --manifest-path src-tauri/Cargo.toml`。macOS DMG 构建后运行 `packaging/polish_dmg.py` 清理卷图标并设置扩展名展示,Release 工作流也会执行。桌面核心协议、浏览器安装与更新清单测试分别为 `tests/test_desktop_core.py`、`tests/test_playwright_runtime.py`、`tests/test_update_manifest.py`。
-
-## 部署
-
-[Dockerfile](Dockerfile) 两阶段构建(uv 装依赖 → 运行时),入口 `cli.py`;[compose.yaml](compose.yaml) 挂载 `data/`(命名卷)、`.secrets/`(只读)、`archive/`(只读),注入 `NEWSPAPER_*` 环境变量。数据目录变化会被 `data/` 卷持久化。
 
 ## 注意事项
 

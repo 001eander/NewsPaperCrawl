@@ -7,7 +7,7 @@
   - 报纸代码: paper_dir_code(存储路径用,去 "n.D")与
     paper_image_code(版面图 URL 用,去 "n.")——两者不同属有意为之
   - 存储相对路径规则: 统一 as_posix(/ 分隔),DB 里存的相对路径跨平台可解析,
-    便于 Docker 卷在 Windows 开发机与 Linux 容器间迁移
+    便于数据目录跨平台搬迁
   - 认证失效特征判定: response_is_auth_fail(站点登录页的响应特征)
 
 metaid 编码约定(改任何一处要同步验证):

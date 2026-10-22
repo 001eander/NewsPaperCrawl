@@ -4,7 +4,7 @@
 ContentStore 端口的本地实现:正文 JSON 与版面位置 JSON 落盘到 DATA_DIR。
 
 相对路径统一用 / 分隔(as_posix),DB 里存的相对路径跨平台可解析,
-便于 Docker 卷在 Windows 开发机与 Linux 容器间迁移。
+便于数据目录跨平台搬迁。
 """
 
 import json
@@ -30,7 +30,7 @@ class FileContentStore:
     ) -> str:
         """
         把保序 blocks 写为 content.json;按 img_results 回填各 img 块的 local_path。
-        返回相对 DATA_DIR 的路径(便于 Docker 卷可移植)。
+        返回相对 DATA_DIR 的路径(便于数据目录搬迁)。
         """
         img_by_src = {r.url: r for r in img_results}
         final_blocks = []

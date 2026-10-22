@@ -311,7 +311,7 @@ class CrawlService:
 
         async def download_one(i: int, url: str) -> ImageResult:
             suffix = Path(url).suffix or ".jpg"
-            # 相对路径统一用 / 分隔(as_posix),Windows 上跑出的 DB 路径也能被 Linux 容器解析
+            # 相对路径统一用 / 分隔(as_posix),跨平台都能解析
             rel = (Path(rel_dir) / f"{i}{suffix}").as_posix()
             try:
                 # 单图限时:CDN 偶发挂起/极慢的图若不限时,会拖垮整批 gather(长尾)。

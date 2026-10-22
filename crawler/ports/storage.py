@@ -20,7 +20,7 @@ class ContentStore(Protocol):
         self, article: Article, parsed: ParsedArticle, img_results: list[ImageResult]
     ) -> str:
         """把保序 blocks 写为 content.json;按 img_results 回填各 img 块的
-        local_path。返回相对 DATA_DIR 的路径(便于 Docker 卷可移植)。"""
+        local_path。返回相对 DATA_DIR 的路径(便于数据目录搬迁)。"""
         ...
 
     def save_positions(self, board: Board, positions: list[ArticlePosition]) -> None:
