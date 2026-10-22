@@ -92,7 +92,7 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
   - `config.py` — `Settings`(frozen dataclass):所有运行时路径统一收口,支持环境变量覆盖(Docker 用 `NEWSPAPER_*` 注入)
 - [crawler/bootstrap.py](crawler/bootstrap.py) — 组合根:读配置、建适配器、注入服务,并负责收尾通知(正常完成 / 认证失效 / 异常中断;`import` 阶段不构造 HttpClient,也不推送)
 - [crawler/logging_config.py](crawler/logging_config.py) — 控制台 + 按日滚动文件双通道,幂等;`ProgressLogger` 用于高频事件节流(如报道落库)
-- [scripts/login.py](scripts/login.py) — Playwright 同步登录流程:打开 share 资源页 → 点"方正数字报"让 JS 弹出新标签页 → 自动填账号/选机构/填验证码/点登录 → 等 cookie 连续 15s 无变化(登录稳定)后保存全部 cookie。验证码由页面本地 GVerify 生成,答案存在 Vue 实例里,直接读取即可(登录接口不校验验证码)
+- [scripts/login.py](scripts/login.py) — Playwright 同步登录流程:打开 share 资源页 → 点"方正数字报"让 JS 弹出新标签页 → 自动填账号/选机构/填验证码/点登录 → 轮询到 `vpn358_sid` 后保存全部 cookie。验证码由页面本地 GVerify 生成,答案存在 Vue 实例里,直接读取即可(登录接口不校验验证码)
 
 ### 认证与通知
 
