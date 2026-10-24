@@ -585,16 +585,19 @@ class _FakeProcess:
 
 
 class _FakeConnection:
-    def __init__(self):
+    def __init__(self, *, eof: bool = False):
         self.messages = []
+        self.eof = eof
 
     def send(self, message):
         self.messages.append(message)
 
     def poll(self):
-        return bool(self.messages)
+        return self.eof or bool(self.messages)
 
     def recv(self):
+        if self.eof:
+            raise EOFError
         return self.messages.pop(0)
 
     def close(self):
@@ -602,12 +605,13 @@ class _FakeConnection:
 
 
 class _FakeMPContext:
-    def __init__(self, blocking: bool = False):
+    def __init__(self, blocking: bool = False, eof: bool = False):
         self.blocking = blocking
+        self.eof = eof
         self.processes: list[_FakeProcess] = []
 
     def Pipe(self, *, duplex):
-        return _FakeConnection(), _FakeConnection()
+        return _FakeConnection(eof=self.eof), _FakeConnection()
 
     def Process(self, *, target, args, name):
         process = _FakeProcess(
@@ -643,6 +647,24 @@ def test_login_uses_spawn_context(tmp_path):
     )
     assert isinstance(process.args[3], _FakeConnection)
     assert process.name == "newspapercrawl-login"
+
+
+def test_login_success_tolerates_closed_error_channel(tmp_path):
+    context = _FakeMPContext(eof=True)
+
+    async def scenario():
+        core, out = _core(
+            tmp_path,
+            mp_context=context,
+            browser_installed_func=lambda: True,
+        )
+        await _send(core, {"id": "1", "command": "login"})
+        await core.wait_idle()
+        return out
+
+    event = _operation_done(asyncio.run(scenario()))
+    assert event["outcome"] == "done"
+    assert event["message"] == "登录完成"
 
 
 def test_login_cancel_terminates_real_process_path(tmp_path):

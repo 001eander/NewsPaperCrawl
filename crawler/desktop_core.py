@@ -456,8 +456,11 @@ class DesktopCore:
                 logger.debug("终止登录子进程失败", exc_info=True)
         try:
             await asyncio.to_thread(process.join)
-            if read_channel.poll():
-                op.error = read_channel.recv()
+            try:
+                if read_channel.poll():
+                    op.error = read_channel.recv()
+            except EOFError:
+                pass
             return process.exitcode if process.exitcode is not None else -1
         finally:
             read_channel.close()
