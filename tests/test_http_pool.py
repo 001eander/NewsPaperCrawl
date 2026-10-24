@@ -19,8 +19,8 @@ class _Auth:
 
 
 class _Notifier:
-    async def notify(self, title: str, body: str) -> None:
-        pass
+    async def notify(self, title: str, body: str) -> bool:
+        return True
 
 
 def test_connector_pool_covers_html_and_image_limits():

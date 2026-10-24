@@ -767,6 +767,10 @@ input[type="number"] {
   gap: 16px;
 }
 
+.stage-grid > .card {
+  margin-top: 0;
+}
+
 .stage-card {
   display: flex;
   flex-direction: column;

@@ -158,6 +158,10 @@ def read_captcha_code(page) -> str:
     Vue 实例的 verifyCode.options.code 里;登录接口本身不接收验证码,只在
     前端比对。所以直接读内存即可,无需 OCR 或识别服务。
     """
+    page.wait_for_function(
+        "() => window.vm?.verifyCode?.options?.code?.length > 0",
+        timeout=15_000,
+    )
     code = page.evaluate("() => window.vm?.verifyCode?.options?.code || ''").strip()
     if not code:
         raise RuntimeError("未能从登录页读取验证码(GVerify 实例不可用)")
@@ -255,17 +259,15 @@ def run_login(
             np.locator(".ipt-tel").fill(cred["username"])
             np.locator(".ipt-pwd").fill(cred["password"])
             select_province_and_library(np)
-            print(f"[3/6] 已填入账号 {cred['username']} 并选择 省本级 -> 浙江图书馆")
+            print("[3/6] 已填入账号并选择 省本级 -> 浙江图书馆")
 
             apabi_page = None
             for attempt in range(1, LOGIN_MAX_ATTEMPTS + 1):
                 try:
-                    code = submit_login(np)
+                    submit_login(np)
                 except RuntimeError as e:
                     sys.exit(str(e))
-                print(
-                    f"[3/6] 已提交登录(验证码 {code},第 {attempt}/{LOGIN_MAX_ATTEMPTS} 次)"
-                )
+                print(f"[3/6] 已提交登录(第 {attempt}/{LOGIN_MAX_ATTEMPTS} 次)")
                 # 给前端校验和 AJAX 留出时间,避免把上一轮的错误文案当成结果
                 time.sleep(2)
                 apabi_page, err = wait_for_fangzheng(ctx, LOGIN_REDIRECT_TIMEOUT)

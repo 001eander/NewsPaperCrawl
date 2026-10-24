@@ -144,23 +144,27 @@ class _Operation:
     task: asyncio.Task[None] | None = None
     process: Any = None
     terminate: Callable[[], None] | None = None
+    error: str = ""
 
 
 LoginRunner = Callable[[Path, Path, bool, _Operation], Awaitable[int]]
 
 
 def _login_child_entry(
-    credentials_path: str, cookies_path: str, headless: bool
+    credentials_path: str, cookies_path: str, headless: bool, error_channel: Any
 ) -> None:
-    """
-    multiprocessing spawn 的登录入口。
-
-    子进程继承 sidecar 的 stdout,但协议通道只能由父进程写,因此先把
-    print 重定向到 stderr,再调用 scripts/login.py 的 run_login。
-    """
+    """在独立进程中执行登录，并把脱敏后的失败原因返回 sidecar。"""
     if sys.stderr is not None:
         sys.stdout = sys.stderr
-    run_login(Path(credentials_path), Path(cookies_path), headless=headless)
+    try:
+        run_login(Path(credentials_path), Path(cookies_path), headless=headless)
+    except SystemExit as e:
+        if isinstance(e.code, str):
+            error_channel.send(e.code)
+        raise
+    except Exception as e:
+        error_channel.send(str(e) or type(e).__name__)
+        raise
 
 
 class DesktopCore:
@@ -410,7 +414,10 @@ class DesktopCore:
                 elif returncode == 0:
                     outcome, message = "done", "登录完成"
                 else:
-                    outcome, message = "error", f"登录脚本退出码 {returncode}"
+                    outcome, message = (
+                        "error",
+                        op.error or f"登录脚本退出码 {returncode}",
+                    )
         except asyncio.CancelledError:
             outcome, message = "stopped", "已被用户取消"
         except BrowserInstallError as e:
@@ -432,12 +439,14 @@ class DesktopCore:
         op: _Operation,
     ) -> int:
         """spawn 登录子进程;cancel 时 terminate,join 在后台线程等待"""
+        read_channel, write_channel = self._mp_context.Pipe(duplex=False)
         process = self._mp_context.Process(
             target=_login_child_entry,
-            args=(str(credentials), str(cookies), bool(headless)),
+            args=(str(credentials), str(cookies), bool(headless), write_channel),
             name="newspapercrawl-login",
         )
         process.start()
+        write_channel.close()
         op.process = process
         op.terminate = process.terminate
         if op.cancel_requested:
@@ -447,8 +456,11 @@ class DesktopCore:
                 logger.debug("终止登录子进程失败", exc_info=True)
         try:
             await asyncio.to_thread(process.join)
+            if read_channel.poll():
+                op.error = read_channel.recv()
             return process.exitcode if process.exitcode is not None else -1
         finally:
+            read_channel.close()
             op.process = None
             op.terminate = None
 
@@ -567,8 +579,14 @@ class DesktopCore:
     async def _test_bark(self) -> dict[str, Any]:
         path = self._settings().secrets_dir / "bark.json"
         notifier = self._notifier_factory(path)
-        await notifier.notify("浙图爬虫测试", "Bark 配置生效")
-        return {"configured": bool(notifier.is_configured)}
+        configured = bool(notifier.is_configured)
+        sent = await notifier.notify("浙图爬虫测试", "Bark 配置生效")
+        message = ""
+        if not configured:
+            message = "device key 未配置"
+        elif not sent:
+            message = "Bark 推送失败，请检查网络、证书和 Bark 配置"
+        return {"configured": configured, "sent": sent, "message": message}
 
 
 # ---------------------------------------------------------------- 参数校验

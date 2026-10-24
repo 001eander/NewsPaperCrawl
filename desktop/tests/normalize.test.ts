@@ -168,6 +168,8 @@ describe('normalizeConfig', () => {
   it('解析 Bark 测试结果', () => {
     expect(barkTestOutcome({ configured: false }).ok).toBe(false);
     expect(barkTestOutcome({ configured: true }).ok).toBe(true);
+    expect(barkTestOutcome({ configured: true, sent: false }).ok).toBe(false);
+    expect(barkTestOutcome({ configured: true, sent: true }).ok).toBe(true);
     expect(barkTestOutcome(null).ok).toBe(true);
   });
 });

@@ -26,7 +26,11 @@ import pytest
 
 from crawler.adapters.config import Settings
 from crawler.adapters.instance_lock import AlreadyRunningError
-from crawler.desktop_core import DesktopCore, configure_event_logging
+from crawler.desktop_core import (
+    DesktopCore,
+    _login_child_entry,
+    configure_event_logging,
+)
 from crawler.domain.exceptions import AuthError
 
 SECRET = "test-only-secret"
@@ -489,6 +493,37 @@ def test_login_nonzero_exit(tmp_path):
     assert "退出码 2" in event["message"]
 
 
+def test_login_uses_detailed_error_from_runner(tmp_path):
+    async def fake_login(credentials, cookies, headless, op) -> int:
+        op.error = "读者账号或密码错误"
+        return 1
+
+    async def scenario():
+        core, out = _core(
+            tmp_path,
+            browser_installed_func=lambda: True,
+            login_runner=fake_login,
+        )
+        await _send(core, {"id": "1", "command": "login"})
+        await core.wait_idle()
+        return out
+
+    event = _operation_done(asyncio.run(scenario()))
+    assert event["outcome"] == "error"
+    assert event["message"] == "读者账号或密码错误"
+
+
+def test_login_child_reports_system_exit_message(monkeypatch):
+    def fail_login(*args, **kwargs):
+        raise SystemExit("验证码错误")
+
+    monkeypatch.setattr("crawler.desktop_core.run_login", fail_login)
+    channel = _FakeConnection()
+    with pytest.raises(SystemExit):
+        _login_child_entry("credentials", "cookies", False, channel)
+    assert channel.messages == ["验证码错误"]
+
+
 def test_login_cancel_terminates_runner(tmp_path):
     started = asyncio.Event()
     stopped = asyncio.Event()
@@ -549,10 +584,30 @@ class _FakeProcess:
         self.done.set()
 
 
+class _FakeConnection:
+    def __init__(self):
+        self.messages = []
+
+    def send(self, message):
+        self.messages.append(message)
+
+    def poll(self):
+        return bool(self.messages)
+
+    def recv(self):
+        return self.messages.pop(0)
+
+    def close(self):
+        return None
+
+
 class _FakeMPContext:
     def __init__(self, blocking: bool = False):
         self.blocking = blocking
         self.processes: list[_FakeProcess] = []
+
+    def Pipe(self, *, duplex):
+        return _FakeConnection(), _FakeConnection()
 
     def Process(self, *, target, args, name):
         process = _FakeProcess(
@@ -581,11 +636,12 @@ def test_login_uses_spawn_context(tmp_path):
     process = context.processes[0]
     assert process.target.__name__ == "_login_child_entry"
     settings = _settings(tmp_path)
-    assert process.args == (
+    assert process.args[:3] == (
         str(settings.secrets_dir / "credentials.json"),
         str(settings.secrets_dir / "cookies.json"),
         False,
     )
+    assert isinstance(process.args[3], _FakeConnection)
     assert process.name == "newspapercrawl-login"
 
 
@@ -728,8 +784,9 @@ class _FileNotifier:
         self.is_configured = bool(data.get("device_key"))
         self.calls: list[tuple[str, str]] = []
 
-    async def notify(self, title: str, body: str = "") -> None:
+    async def notify(self, title: str, body: str = "") -> bool:
         self.calls.append((title, body))
+        return self.is_configured
 
 
 def test_bark_test_uses_saved_config(tmp_path):
@@ -755,7 +812,11 @@ def test_bark_test_uses_saved_config(tmp_path):
         return out
 
     out = asyncio.run(scenario())
-    assert _responses(out)[1]["result"] == {"configured": True}
+    assert _responses(out)[1]["result"] == {
+        "configured": True,
+        "sent": True,
+        "message": "",
+    }
     assert len(notifiers) == 1
     assert notifiers[0].path == _settings(tmp_path).secrets_dir / "bark.json"
     assert notifiers[0].calls == [("浙图爬虫测试", "Bark 配置生效")]
@@ -768,7 +829,11 @@ def test_bark_test_without_key(tmp_path):
         return out
 
     out = asyncio.run(scenario())
-    assert _responses(out)[0]["result"] == {"configured": False}
+    assert _responses(out)[0]["result"] == {
+        "configured": False,
+        "sent": False,
+        "message": "device key 未配置",
+    }
 
 
 # ---------------------------------------------------------------- 日志 / serve

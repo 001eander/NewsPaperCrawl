@@ -565,7 +565,7 @@ export function barkTestOutcome(raw: unknown): BarkTestOutcome {
     return { ok: true, message: raw };
   }
   if (isRecord(raw)) {
-    const configured = firstDefined(raw.configured, raw.ok, raw.success);
+    const configured = firstDefined(raw.sent, raw.ok, raw.success, raw.configured);
     return {
       ok: typeof configured === 'boolean' ? configured : true,
       message: stringValue(raw.message, raw.detail),

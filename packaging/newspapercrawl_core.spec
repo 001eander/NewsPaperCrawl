@@ -67,7 +67,7 @@ a = Analysis(
     [str(ENTRY)],
     pathex=[str(ROOT)],
     binaries=playwright_binaries,
-    datas=playwright_datas,
+    datas=playwright_datas + collect_data_files("certifi"),
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

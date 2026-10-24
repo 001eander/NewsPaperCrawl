@@ -16,9 +16,11 @@ Bark 通知适配器
 
 import json
 import logging
+import ssl
 from pathlib import Path
 
 import aiohttp
+import certifi
 
 logger = logging.getLogger(__name__)
 
@@ -58,17 +60,24 @@ class BarkNotifier:
         self._ensure_loaded()
         return bool(self._key)
 
-    async def notify(self, title: str, body: str = "") -> None:
-        """推送一条通知;配置缺失/推送失败都只记日志,不抛异常"""
+    async def notify(self, title: str, body: str = "") -> bool:
+        """推送一条通知并返回实际是否成功；失败只记日志，不抛异常。"""
         self._ensure_loaded()
         if not self._key:
-            return
+            return False
         url = f"{self._server}/{self._key}/{title}"
         if body:
             url += f"/{body}"
-        async with aiohttp.ClientSession() as sess:
+        context = ssl.create_default_context(cafile=certifi.where())
+        connector = aiohttp.TCPConnector(ssl=context)
+        async with aiohttp.ClientSession(connector=connector) as sess:
             try:
                 async with sess.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status != 200:
+                        logger.warning("Bark 推送失败: HTTP %s", r.status)
+                        return False
                     logger.info("Bark 推送: %s (HTTP %s)", title, r.status)
+                    return True
             except Exception as e:  # noqa: BLE001
                 logger.warning("Bark 推送失败: %s", e)
+                return False

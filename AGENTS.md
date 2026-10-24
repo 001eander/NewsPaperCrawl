@@ -89,13 +89,13 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
   - `cookie_auth.py` — 加载 cookie(兼容 Playwright 导出的 list 格式与旧 dict 格式,按 domain 匹配注入);失效判定委托领域规则
   - `sqlite_repo.py` — 全部 SQLite 操作与表结构(`SCHEMA`);含旧库迁移(articles.content → content_path、补认领列,幂等);`claim_issues`/`claim_articles` 在 `BEGIN IMMEDIATE` 事务里原子认领
   - `instance_lock.py` — 同阶段单实例文件锁(Windows `msvcrt` / POSIX `flock`),进程退出自动释放
-  - `bark.py` — Bark 手机推送,未配置时静默跳过(推送必须 await 完成,见本节末)
+  - `bark.py` — Bark 手机推送,未配置/失败返回 False(推送必须 await 完成,见本节末);用 certifi 根证书校验 TLS,CA 文件随 sidecar 打包
   - `fs_storage.py` — 正文 JSON / 位置 JSON 落盘到 `DATA_DIR`
   - `paperlist_csv.py` — 报纸清单 CSV → `domain.Paper` 列表
   - `config.py` — `Settings`(frozen dataclass):所有运行时路径统一收口,支持环境变量覆盖(Docker 用 `NEWSPAPER_*` 注入)
 - [crawler/bootstrap.py](crawler/bootstrap.py) — 组合根:读配置、建适配器、注入服务,并负责收尾通知(正常完成 / 认证失效 / 异常中断;`import` 阶段不构造 HttpClient,也不推送)
 - [crawler/logging_config.py](crawler/logging_config.py) — 控制台 + 按日滚动文件双通道,幂等;`ProgressLogger` 用于高频事件节流(如报道落库)
-- [scripts/login.py](scripts/login.py) — Playwright 同步登录流程:打开 share 资源页 → 点"方正数字报"让 JS 弹出新标签页 → 自动填账号/选机构/填验证码/点登录 → 轮询到 `vpn358_sid` 后保存全部 cookie。验证码由页面本地 GVerify 生成,答案存在 Vue 实例里,直接读取即可(登录接口不校验验证码)
+- [scripts/login.py](scripts/login.py) — Playwright 同步登录流程:打开 share 资源页 → 点"方正数字报"让 JS 弹出新标签页 → 自动填账号/选机构/填验证码/点登录 → 轮询到 `vpn358_sid` 后保存全部 cookie。验证码由页面本地 GVerify 生成,答案存在 Vue 实例里,读取前用 `wait_for_function` 等 code 初始化完成(登录接口不校验验证码)
 
 ### 认证与通知
 
@@ -106,7 +106,7 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 
 ## 桌面分发与更新
 
-桌面端是 Tauri 2 + Vite/TypeScript,不重写爬虫业务:`desktop/` 为界面,`src-tauri/` 为 Rust 窗口与 sidecar 生命周期管理,`crawler/desktop_core.py` 以 JSON Lines 处理状态、运行、取消、登录与配置。Python sidecar 由 PyInstaller onefile 构建,配置在 `packaging/`,按 Rust target triple 命名后放入 `src-tauri/binaries/`。
+桌面端是 Tauri 2 + Vite/TypeScript,不重写爬虫业务:`desktop/` 为界面,`src-tauri/` 为 Rust 窗口与 sidecar 生命周期管理,`crawler/desktop_core.py` 以 JSON Lines 处理状态、运行、取消、登录与配置。`tauri-plugin-single-instance` 限制单个桌面实例,重复启动只聚焦已有窗口;阶段锁仍负责 CLI/容器互斥。Python sidecar 由 PyInstaller onefile 构建,配置在 `packaging/`,按 Rust target triple 命名后放入 `src-tauri/binaries/`。
 
 安装版由 Rust 注入 `NEWSPAPER_*` 与 `PLAYWRIGHT_BROWSERS_PATH`:数据、凭据和浏览器位于系统应用数据目录,日志位于应用日志目录,报纸清单来自 bundle 资源。源码 CLI/Docker 默认路径不变。Chromium 不随安装包分发,首次登录时下载到用户目录。不要自动迁移或覆盖源码版旧数据。
 
