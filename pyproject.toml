@@ -1,6 +1,6 @@
 [project]
 name = "newspapercrawl-raw"
-version = "0.2.3"
+version = "0.2.4"
 description = "浙图方正数字报异步爬虫与 Tauri 桌面应用"
 readme = "README.md"
 requires-python = ">=3.12"

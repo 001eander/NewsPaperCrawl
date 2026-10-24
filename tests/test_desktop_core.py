@@ -28,6 +28,7 @@ from crawler.adapters.config import Settings
 from crawler.adapters.instance_lock import AlreadyRunningError
 from crawler.desktop_core import (
     DesktopCore,
+    _configure_stdio_utf8,
     _login_child_entry,
     configure_event_logging,
 )
@@ -859,6 +860,29 @@ def test_bark_test_without_key(tmp_path):
 
 
 # ---------------------------------------------------------------- 日志 / serve
+
+
+def test_stdio_is_reconfigured_from_windows_gbk_to_utf8(monkeypatch):
+    streams = {
+        name: io.TextIOWrapper(io.BytesIO(), encoding="gbk")
+        for name in ("stdin", "stdout", "stderr")
+    }
+    for name, stream in streams.items():
+        monkeypatch.setattr(f"sys.{name}", stream)
+
+    _configure_stdio_utf8()
+
+    assert all(stream.encoding == "utf-8" for stream in streams.values())
+    streams["stdout"].write("sidecar 启动,版本 0.2.3\n")
+    streams["stderr"].write("已保存 30 个 cookie\n")
+    streams["stdout"].flush()
+    streams["stderr"].flush()
+    assert streams["stdout"].buffer.getvalue().decode("utf-8") == (
+        "sidecar 启动,版本 0.2.3\n"
+    )
+    assert streams["stderr"].buffer.getvalue().decode("utf-8") == (
+        "已保存 30 个 cookie\n"
+    )
 
 
 def test_event_log_handler_emits_log_frames(tmp_path):

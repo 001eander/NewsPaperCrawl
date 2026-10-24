@@ -711,6 +711,13 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 # ---------------------------------------------------------------- 进程入口
 
 
+def _configure_stdio_utf8() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
+
 async def _serve(protocol_out: TextIO) -> None:
     # sidecar 的日志只走事件帧:先挂 EventLogHandler,再进入主循环。
     # 随后 run_stage 内部调用 setup_logging() 时,root 已有 handler,
@@ -725,6 +732,7 @@ async def _serve(protocol_out: TextIO) -> None:
 
 
 def main() -> int:
+    _configure_stdio_utf8()
     # PyInstaller 冻结后,multiprocessing spawn 需要先走 freeze_support
     multiprocessing.freeze_support()
     protocol_out = sys.stdout
