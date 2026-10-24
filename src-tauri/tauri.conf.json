@@ -1,0 +1,68 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "浙图报纸爬虫",
+  "version": "0.2.0",
+  "identifier": "cn.zjlib.newspapercrawl",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../desktop/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "浙图报纸爬虫",
+        "width": 1120,
+        "height": 780,
+        "minWidth": 860,
+        "minHeight": 620
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self'; img-src 'self' asset: data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/newspapercrawl-core"],
+    "resources": {
+      "../archive/报纸清单.csv": "archive/报纸清单.csv"
+    },
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "dmg": {
+        "windowSize": {
+          "width": 660,
+          "height": 360
+        },
+        "appPosition": {
+          "x": 175,
+          "y": 155
+        },
+        "applicationFolderPosition": {
+          "x": 485,
+          "y": 155
+        }
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ1ODkyQjA3M0RCMUNBOUEKUldTYXlyRTlCeXVKMWNGVTRrTWM4dkw1d1MzNEc0NndSS3ViR2JPREFYOVMzU3dNTTBSckZ5RFUK",
+      "endpoints": [
+        "https://github.com/001eander/NewsPaperCrawl/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

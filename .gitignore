@@ -27,6 +27,17 @@ logs/
 .coverage
 htmlcov/
 
+# 桌面应用与打包产物
+node_modules/
+desktop/dist/
+desktop/test-results/
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/binaries/
+build/
+dist/
+*.spec.bak
+
 # macOS
 .DS_Store
 

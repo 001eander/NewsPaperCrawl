@@ -10,6 +10,13 @@ __pycache__/
 .ruff_cache/
 .git/
 
+node_modules/
+desktop/dist/
+src-tauri/target/
+src-tauri/binaries/
+build/
+dist/
+
 .playwright-mcp/
 
 archive/*

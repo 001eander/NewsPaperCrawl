@@ -1,7 +1,7 @@
 [project]
 name = "newspapercrawl-raw"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "浙图方正数字报异步爬虫与 Tauri 桌面应用"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -17,6 +17,7 @@ dependencies = [
 dev = [
     "ruff>=0.16.1",
     "pytest>=8.0.0",
+    "pyinstaller>=6.22.3",
 ]
 
 [tool.ruff.lint]
@@ -24,6 +25,11 @@ dev = [
 extend-select = ["I"]
 # ASYNC230: 一次性导入 CSV 用同步 open 更简洁,引入异步文件库属于过度设计
 ignore = ["ASYNC230"]
+
+[tool.ruff.lint.per-file-ignores]
+# 这些脚本历史上以 `uv run python xxx.py` 方式调用,没有可执行位;
+# ruff 0.16 的 EXE001 会因 shebang 报错,与运行方式无关
+"scripts/*.py" = ["EXE001"]
 
 [tool.pytest.ini_options]
 # 项目未安装为包(uv sync --no-install-project),测试需从项目根导入 crawler

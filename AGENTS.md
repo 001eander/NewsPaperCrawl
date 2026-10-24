@@ -104,6 +104,16 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 - 认证失效 → 抛 `AuthError` → `bootstrap.run_stage` 推 Bark、`cli.py` 以非零码退出(便于 cron/systemd 感知)
 - 每次运行收尾(正常完成/认证失效/异常中断)都会推 Bark;推送是异步 I/O,必须在 `run_stage` 返回前 await 完成,挂后台任务会被事件循环关闭时取消
 
+## 桌面分发与更新
+
+桌面端是 Tauri 2 + Vite/TypeScript,不重写爬虫业务:`desktop/` 为界面,`src-tauri/` 为 Rust 窗口与 sidecar 生命周期管理,`crawler/desktop_core.py` 以 JSON Lines 处理状态、运行、取消、登录与配置。Python sidecar 由 PyInstaller onefile 构建,配置在 `packaging/`,按 Rust target triple 命名后放入 `src-tauri/binaries/`。
+
+安装版由 Rust 注入 `NEWSPAPER_*` 与 `PLAYWRIGHT_BROWSERS_PATH`:数据、凭据和浏览器位于系统应用数据目录,日志位于应用日志目录,报纸清单来自 bundle 资源。源码 CLI/Docker 默认路径不变。Chromium 不随安装包分发,首次登录时下载到用户目录。不要自动迁移或覆盖源码版旧数据。
+
+更新使用 `tauri-plugin-updater` + GitHub Release 的 `latest.json`;更新包必须验签,爬取/登录活动任务结束后才能关闭 sidecar 并安装。`.github/workflows/release.yml` 分别构建 Windows x64、macOS ARM64/Intel,publish job 汇总三平台产物生成唯一更新清单。更新私钥不得提交,公钥在 `src-tauri/tauri.conf.json`。
+
+桌面常用命令:`npm ci`、`npm run sidecar`、`npm run tauri dev`、`npm test`、`npm run build`、`npm run check-versions`、`npm run tauri build`;Rust 检查使用 `cargo fmt/clippy/test --manifest-path src-tauri/Cargo.toml`。macOS DMG 构建后运行 `packaging/polish_dmg.py` 清理卷图标并设置扩展名展示,Release 工作流也会执行。桌面核心协议、浏览器安装与更新清单测试分别为 `tests/test_desktop_core.py`、`tests/test_playwright_runtime.py`、`tests/test_update_manifest.py`。
+
 ## 部署
 
 [Dockerfile](Dockerfile) 两阶段构建(uv 装依赖 → 运行时),入口 `cli.py`;[compose.yaml](compose.yaml) 挂载 `data/`(命名卷)、`.secrets/`(只读)、`archive/`(只读),注入 `NEWSPAPER_*` 环境变量。数据目录变化会被 `data/` 卷持久化。

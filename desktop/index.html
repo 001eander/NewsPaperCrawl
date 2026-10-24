@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>浙图报纸爬虫</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none">
+              <path d="M7 6h14l4 4v16H7z" fill="currentColor" opacity=".95" />
+              <path d="M21 6v5h4" fill="none" stroke="var(--sidebar)" stroke-width="1.6" />
+              <path d="M11 15h10M11 19h10M11 23h6" stroke="var(--sidebar)" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+          </div>
+          <div class="brand-copy">
+            <strong>浙图报纸爬虫</strong>
+            <span>方正数字报 · 原始数据</span>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="主导航">
+          <button class="nav-item is-active" type="button" data-page="run" aria-current="page">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z" fill="currentColor" /></svg>
+            <span>运行</span>
+          </button>
+          <button class="nav-item" type="button" data-page="status">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <path d="M4 19V9M10 19V5M16 19v-7M22 19H2" />
+            </svg>
+            <span>状态</span>
+          </button>
+          <button class="nav-item" type="button" data-page="logs">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2.5" />
+              <path d="m7 9 3 3-3 3M13 15h4" />
+            </svg>
+            <span>日志</span>
+          </button>
+          <button class="nav-item" type="button" data-page="settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <path d="M4 7h10M18 7h2M4 17h2M10 17h10M4 12h4M12 12h8" />
+              <circle cx="16" cy="7" r="2.2" />
+              <circle cx="8" cy="17" r="2.2" />
+              <circle cx="10" cy="12" r="2.2" />
+            </svg>
+            <span>配置</span>
+          </button>
+          <button class="nav-item" type="button" data-page="about">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5M12 7.6v.2" />
+            </svg>
+            <span>关于 / 更新</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-status">
+            <span class="status-dot" id="sidebar-dot"></span>
+            <div class="sidebar-status-copy">
+              <span id="sidebar-operation-label">空闲</span>
+              <small id="sidebar-operation-hint">等待任务</small>
+            </div>
+          </div>
+          <button class="icon-button" type="button" id="quit-button" title="退出应用" aria-label="退出应用">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0" />
+            </svg>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="page-heading">
+            <h1 id="page-title">运行</h1>
+            <p id="page-subtitle">登录并启动四阶段爬取任务</p>
+          </div>
+          <div class="topbar-meta">
+            <span class="pill" id="version-pill">v0.2.0</span>
+            <span class="pill operation-pill is-idle" id="topbar-operation">
+              <span class="status-dot"></span>
+              <span id="topbar-operation-text">空闲</span>
+            </span>
+          </div>
+        </header>
+
+        <div class="content">
+          <!-- 运行 -->
+          <section class="page is-active" data-page-view="run">
+            <section class="card login-card">
+              <div class="login-body">
+                <div class="login-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+                    <circle cx="8" cy="12" r="4" />
+                    <path d="M12 12h9M17 12v3M20 12v2" />
+                  </svg>
+                </div>
+                <div class="login-copy">
+                  <h2>登录 / 刷新 cookie</h2>
+                  <p>认证失效时重新登录。脚本会打开浏览器自动完成账号、验证码与提交，过程实时写入日志页。</p>
+                </div>
+                <button class="btn btn-secondary" type="button" id="login-button">登录</button>
+              </div>
+            </section>
+
+            <div class="stage-grid">
+              <article class="card stage-card" data-stage="import">
+                <header class="stage-header">
+                  <span class="step-badge">0</span>
+                  <div>
+                    <h2>导入报纸清单</h2>
+                    <p>import · 从 CSV 幂等导入报纸元数据</p>
+                  </div>
+                </header>
+                <div class="card-body">
+                  <div class="fields">
+                    <div class="field field-full">
+                      <label for="import-csv">CSV 路径</label>
+                      <div class="input-row">
+                        <input id="import-csv" type="text" placeholder="留空使用默认 archive/报纸清单.csv" spellcheck="false" autocomplete="off" />
+                        <button class="btn btn-secondary" type="button" id="browse-csv">浏览…</button>
+                      </div>
+                      <p class="hint">通过系统文件选择器挑选 .csv 文件。</p>
+                    </div>
+                  </div>
+                  <p class="form-error" data-error-for="import" hidden></p>
+                </div>
+                <footer class="card-footer">
+                  <button class="btn btn-primary" type="button" data-run-stage="import">运行 import</button>
+                </footer>
+              </article>
+
+              <article class="card stage-card" data-stage="issues">
+                <header class="stage-header">
+                  <span class="step-badge">1</span>
+                  <div>
+                    <h2>枚举期次</h2>
+                    <p>issues · 按年月范围收集每期报纸</p>
+                  </div>
+                </header>
+                <div class="card-body">
+                  <div class="fields">
+                    <div class="field">
+                      <label for="issues-start-year">起始年 <em>必填</em></label>
+                      <input id="issues-start-year" type="number" inputmode="numeric" min="1900" max="2100" step="1" value="2014" />
+                    </div>
+                    <div class="field">
+                      <label for="issues-end-year">结束年 <em>必填</em></label>
+                      <input id="issues-end-year" type="number" inputmode="numeric" min="1900" max="2100" step="1" value="2026" />
+                    </div>
+                    <div class="field">
+                      <label for="issues-start-month">开始月份</label>
+                      <input id="issues-start-month" type="number" inputmode="numeric" min="1" max="12" step="1" placeholder="可空" />
+                    </div>
+                    <div class="field">
+                      <label for="issues-end-month">结束月份</label>
+                      <input id="issues-end-month" type="number" inputmode="numeric" min="1" max="12" step="1" placeholder="可空" />
+                    </div>
+                    <div class="field">
+                      <label for="issues-concurrency">并发</label>
+                      <input id="issues-concurrency" type="number" inputmode="numeric" min="1" step="1" placeholder="默认 16" />
+                    </div>
+                  </div>
+                  <p class="hint">月份留空表示不限；结束月份包含在范围内。</p>
+                  <p class="form-error" data-error-for="issues" hidden></p>
+                </div>
+                <footer class="card-footer">
+                  <button class="btn btn-primary" type="button" data-run-stage="issues">运行 issues</button>
+                </footer>
+              </article>
+
+              <article class="card stage-card" data-stage="boards">
+                <header class="stage-header">
+                  <span class="step-badge">2</span>
+                  <div>
+                    <h2>抓取版面</h2>
+                    <p>boards · 版面图、位置 JSON 与报道区域</p>
+                  </div>
+                </header>
+                <div class="card-body">
+                  <div class="fields">
+                    <div class="field field-full">
+                      <label for="boards-paperid">paperid</label>
+                      <input id="boards-paperid" type="text" placeholder="可空，例如 n.D330100hzrb" spellcheck="false" autocomplete="off" />
+                    </div>
+                    <div class="field">
+                      <label for="boards-limit">limit</label>
+                      <input id="boards-limit" type="number" inputmode="numeric" min="1" step="1" placeholder="全部 pending" />
+                    </div>
+                    <div class="field">
+                      <label for="boards-concurrency">并发</label>
+                      <input id="boards-concurrency" type="number" inputmode="numeric" min="1" step="1" placeholder="默认 16" />
+                    </div>
+                  </div>
+                  <p class="hint">paperid 留空处理全部报纸；limit 留空处理全部 pending。</p>
+                  <p class="form-error" data-error-for="boards" hidden></p>
+                </div>
+                <footer class="card-footer">
+                  <button class="btn btn-primary" type="button" data-run-stage="boards">运行 boards</button>
+                </footer>
+              </article>
+
+              <article class="card stage-card" data-stage="articles">
+                <header class="stage-header">
+                  <span class="step-badge">3</span>
+                  <div>
+                    <h2>抓取报道</h2>
+                    <p>articles · 正文 JSON 与报道配图</p>
+                  </div>
+                </header>
+                <div class="card-body">
+                  <div class="fields">
+                    <div class="field">
+                      <label for="articles-limit">limit</label>
+                      <input id="articles-limit" type="number" inputmode="numeric" min="1" step="1" placeholder="全部 pending" />
+                    </div>
+                    <div class="field">
+                      <label for="articles-concurrency">并发</label>
+                      <input id="articles-concurrency" type="number" inputmode="numeric" min="1" step="1" placeholder="默认 16" />
+                    </div>
+                  </div>
+                  <p class="hint">每轮最多处理的报道数；留空则持续处理全部 pending。</p>
+                  <p class="form-error" data-error-for="articles" hidden></p>
+                </div>
+                <footer class="card-footer">
+                  <button class="btn btn-primary" type="button" data-run-stage="articles">运行 articles</button>
+                </footer>
+              </article>
+            </div>
+
+            <section class="card run-control-card">
+              <div class="run-control-info">
+                <span class="status-dot" id="run-dot"></span>
+                <div>
+                  <strong id="run-state-text">空闲</strong>
+                  <p id="run-state-hint">选择阶段并填写参数后开始运行。</p>
+                </div>
+              </div>
+              <button class="btn btn-danger" type="button" id="stop-button" disabled>停止任务</button>
+            </section>
+          </section>
+
+          <!-- 状态 -->
+          <section class="page" data-page-view="status">
+            <div class="toolbar">
+              <div class="toolbar-group">
+                <button class="btn btn-secondary" type="button" id="status-refresh">刷新</button>
+                <label class="check">
+                  <input type="checkbox" id="status-auto" checked />
+                  <span>自动刷新（5 秒）</span>
+                </label>
+                <span class="muted" id="status-updated">—</span>
+              </div>
+              <div class="toolbar-group">
+                <button class="btn btn-ghost" type="button" id="failed-button">最近失败</button>
+              </div>
+            </div>
+
+            <div class="stat-grid">
+              <article class="stat">
+                <span class="stat-label">总条目</span>
+                <strong id="stat-total">—</strong>
+                <span class="stat-sub">三张表的全部记录</span>
+              </article>
+              <article class="stat stat-done">
+                <span class="stat-label">已完成</span>
+                <strong id="stat-done">—</strong>
+                <span class="stat-sub">status = done</span>
+              </article>
+              <article class="stat stat-pending">
+                <span class="stat-label">待处理</span>
+                <strong id="stat-pending">—</strong>
+                <span class="stat-sub">含运行中认领</span>
+              </article>
+              <article class="stat stat-failed">
+                <span class="stat-label">失败</span>
+                <strong id="stat-failed">—</strong>
+                <span class="stat-sub">可在最近失败中查看</span>
+              </article>
+            </div>
+
+            <div class="inline-alert is-error" id="status-error" hidden></div>
+
+            <section class="card">
+              <header class="card-header card-header--split">
+                <div>
+                  <h2>阶段总览</h2>
+                  <p>processing 计入待处理</p>
+                </div>
+              </header>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>阶段</th>
+                      <th class="num">总数</th>
+                      <th class="num">完成</th>
+                      <th class="num">待处理</th>
+                      <th class="num">失败</th>
+                      <th>进度</th>
+                    </tr>
+                  </thead>
+                  <tbody id="overview-body">
+                    <tr><td colspan="6" class="empty-cell">加载中…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="card">
+              <header class="card-header card-header--split">
+                <div>
+                  <h2>按报纸</h2>
+                  <p>每格为 done / total</p>
+                </div>
+                <input class="search-input" type="search" id="paper-filter" placeholder="筛选 paperid 或报纸名" />
+              </header>
+              <div class="table-wrap table-wrap--tall">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>paperid</th>
+                      <th>报纸名</th>
+                      <th class="center">issues</th>
+                      <th class="center">boards</th>
+                      <th class="center">articles</th>
+                    </tr>
+                  </thead>
+                  <tbody id="per-paper-body">
+                    <tr><td colspan="5" class="empty-cell">加载中…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <!-- 日志 -->
+          <section class="page" data-page-view="logs">
+            <section class="card logs-card">
+              <header class="logs-toolbar">
+                <div>
+                  <h2>运行日志</h2>
+                  <p class="muted" id="log-meta">0 行 · 上限 5000 行</p>
+                </div>
+                <div class="toolbar-group">
+                  <label class="check">
+                    <input type="checkbox" id="log-autoscroll" checked />
+                    <span>自动滚动</span>
+                  </label>
+                  <button class="btn btn-secondary btn-sm" type="button" id="log-copy">复制</button>
+                  <button class="btn btn-ghost btn-sm" type="button" id="log-clear">清空</button>
+                </div>
+              </header>
+              <div class="log-panel" id="log-view" role="log" aria-live="polite" aria-label="运行日志"></div>
+              <footer class="log-footer">日志通过 core-event 实时推送；超过 5000 行时自动丢弃最早内容。</footer>
+            </section>
+          </section>
+
+          <!-- 配置 -->
+          <section class="page" data-page-view="settings">
+            <div class="settings-grid">
+              <section class="card">
+                <header class="card-header">
+                  <h2>登录凭据</h2>
+                  <p>.secrets/credentials.json · 登录脚本读取</p>
+                </header>
+                <div class="card-body">
+                  <div class="field">
+                    <label for="cred-username">账号</label>
+                    <input id="cred-username" type="text" autocomplete="username" spellcheck="false" placeholder="浙图账号" />
+                  </div>
+                  <div class="field">
+                    <label for="cred-password">密码</label>
+                    <div class="input-row">
+                      <input id="cred-password" type="password" autocomplete="current-password" placeholder="登录密码" />
+                      <button class="btn btn-ghost btn-sm" type="button" id="toggle-password">显示</button>
+                    </div>
+                  </div>
+                  <p class="hint">账号和密码不能为空；保存后下次登录生效，仅存于本机。</p>
+                  <p class="form-error" id="cred-error" hidden></p>
+                </div>
+                <footer class="card-footer">
+                  <button class="btn btn-primary" type="button" id="save-credentials">保存凭据</button>
+                </footer>
+              </section>
+
+              <section class="card">
+                <header class="card-header">
+                  <h2>Bark 推送</h2>
+                  <p>.secrets/bark.json · iOS 通知</p>
+                </header>
+                <div class="card-body">
+                  <div class="field">
+                    <label for="bark-key">device key</label>
+                    <input id="bark-key" type="text" autocomplete="off" spellcheck="false" placeholder="留空即关闭推送" />
+                  </div>
+                  <div class="field">
+                    <label for="bark-server">服务器</label>
+                    <input id="bark-server" type="url" autocomplete="off" spellcheck="false" value="https://api.day.app" />
+                  </div>
+                  <p class="hint">认证失效或运行结束时推送。测试前会先保存当前配置。</p>
+                  <p class="form-error" id="bark-error" hidden></p>
+                </div>
+                <footer class="card-footer card-footer--spread">
+                  <button class="btn btn-secondary" type="button" id="test-bark">发送测试推送</button>
+                  <button class="btn btn-primary" type="button" id="save-bark">保存 Bark</button>
+                </footer>
+              </section>
+            </div>
+
+            <section class="card">
+              <header class="card-header">
+                <h2>本地目录</h2>
+                <p>路径由后端提供，界面只会请求打开固定的三个目录</p>
+              </header>
+              <div class="card-body path-list">
+                <div class="path-row">
+                  <span class="path-label">数据目录</span>
+                  <code class="path-value" id="path-data">—</code>
+                  <button class="btn btn-secondary btn-sm" type="button" data-open-path="data">打开</button>
+                </div>
+                <div class="path-row">
+                  <span class="path-label">日志目录</span>
+                  <code class="path-value" id="path-logs">—</code>
+                  <button class="btn btn-secondary btn-sm" type="button" data-open-path="logs">打开</button>
+                </div>
+                <div class="path-row">
+                  <span class="path-label">配置目录</span>
+                  <code class="path-value" id="path-secrets">—</code>
+                  <button class="btn btn-secondary btn-sm" type="button" data-open-path="secrets">打开</button>
+                </div>
+                <div class="inline-alert is-error" id="paths-error" hidden></div>
+              </div>
+            </section>
+          </section>
+
+          <!-- 关于 / 更新 -->
+          <section class="page" data-page-view="about">
+            <section class="card about-hero">
+              <div class="about-logo" aria-hidden="true">
+                <svg viewBox="0 0 48 48" fill="none">
+                  <path d="M10 7h22l6 6v28H10z" fill="currentColor" opacity=".15" />
+                  <path d="M10 7h22l6 6v28H10z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" />
+                  <path d="M32 7v7h6" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" />
+                  <path d="M16 21h16M16 27h16M16 33h10" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+                </svg>
+              </div>
+              <div class="about-copy">
+                <div class="about-title">
+                  <h2>浙图报纸爬虫</h2>
+                  <span class="pill" id="about-version">v0.2.0</span>
+                </div>
+                <p>通过浙江图书馆代理访问“方正数字报”，抓取期次、版面、报道正文与配图的原始数据。</p>
+                <div class="chips">
+                  <span>Tauri 2</span>
+                  <span>Vite + TypeScript</span>
+                  <span>Windows · macOS</span>
+                </div>
+              </div>
+            </section>
+
+            <div class="about-grid">
+              <section class="card update-card">
+                <header class="card-header">
+                  <h2>应用更新</h2>
+                  <p>启动时静默检查；手动检查会显示结果</p>
+                </header>
+                <div class="card-body">
+                  <div class="update-status" id="update-status" data-phase="idle">
+                    <span class="status-dot" id="update-dot"></span>
+                    <div>
+                      <strong id="update-title">尚未检查更新</strong>
+                      <p id="update-detail">当前版本 v0.2.0</p>
+                    </div>
+                  </div>
+
+                  <div class="update-progress" id="update-progress" hidden>
+                    <div class="progress-bar"><span id="update-progress-bar"></span></div>
+                    <span class="muted" id="update-progress-text"></span>
+                  </div>
+
+                  <pre class="update-notes" id="update-notes" hidden></pre>
+
+                  <p class="inline-alert is-warning" id="update-operation-hint" hidden>
+                    当前有任务在运行。安装更新前需要后端优雅关闭，请先停止任务或等待完成。
+                  </p>
+                  <p class="form-error" id="update-error" hidden></p>
+
+                  <label class="check update-startup-check">
+                    <input type="checkbox" id="update-startup-check" checked />
+                    <span>启动时静默检查更新</span>
+                  </label>
+                </div>
+                <footer class="card-footer card-footer--spread">
+                  <button class="btn btn-secondary" type="button" id="update-check">检查更新</button>
+                  <button class="btn btn-primary" type="button" id="update-install" hidden>下载并安装</button>
+                </footer>
+              </section>
+
+              <section class="card">
+                <header class="card-header">
+                  <h2>应用信息</h2>
+                  <p>桌面端运行环境</p>
+                </header>
+                <div class="card-body">
+                  <dl class="info-list">
+                    <div><dt>当前版本</dt><dd id="info-version">v0.2.0</dd></div>
+                    <div><dt>数据来源</dt><dd>浙江图书馆 · 方正数字报</dd></div>
+                    <div><dt>桌面框架</dt><dd>Tauri 2</dd></div>
+                    <div><dt>前端</dt><dd>Vite + 原生 TypeScript</dd></div>
+                  </dl>
+                  <div class="info-actions">
+                    <button class="btn btn-secondary btn-sm" type="button" data-open-path="data">打开数据目录</button>
+                    <button class="btn btn-secondary btn-sm" type="button" data-open-path="logs">打开日志目录</button>
+                  </div>
+                  <p class="hint">更新由 Tauri Updater 安装；安装前会先请求后端在空闲时优雅关闭，再下载安装并重启。</p>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <dialog class="dialog dialog--wide" id="failed-dialog">
+      <div class="dialog-head">
+        <div>
+          <h2>最近失败</h2>
+          <p class="dialog-sub">每张表最多 5 条，按日期倒序</p>
+        </div>
+        <button class="dialog-close" type="button" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="failed-body" id="failed-body"></div>
+    </dialog>
+
+    <dialog class="dialog" id="app-dialog">
+      <div class="dialog-head">
+        <h2 id="app-dialog-title"></h2>
+        <button class="dialog-close" type="button" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="dialog-body" id="app-dialog-message"></div>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="app-dialog-cancel">取消</button>
+        <button class="btn btn-primary" type="button" id="app-dialog-confirm">确定</button>
+      </div>
+    </dialog>
+
+    <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

@@ -12,6 +12,7 @@
 
 import logging
 from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 
 from .adapters.config import Settings
 
@@ -25,39 +26,42 @@ _LOG_FILE = "crawl.log"
 
 
 def setup_logging(level: int = logging.INFO) -> None:
-    """配置根 logger:控制台 + 按日滚动文件。重复调用无副作用。"""
+    """配置控制台与按日滚动文件；已有 GUI handler 时只补文件通道。"""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     root = logging.getLogger()
-    if root.handlers:
-        # 已配置过(cli.py 与 bootstrap.run_stage 都调),直接对齐级别后返回
-        root.setLevel(level)
-        return
-
     root.setLevel(level)
-
-    console = logging.StreamHandler()
-    console.setLevel(level)
-
-    # TimedRotatingFileHandler 按 UTC 切换日期;进程可跨日持续跑,
-    # 每天一个 crawl.log.YYYY-MM-DD 归档,保留最近 30 天
-    file_handler = TimedRotatingFileHandler(
-        LOG_DIR / _LOG_FILE,
-        when="midnight",
-        interval=1,
-        backupCount=30,
-        encoding="utf-8",
-        utc=False,
-    )
-    file_handler.setLevel(level)
-    file_handler.suffix = "%Y-%m-%d"  # 归档名 crawl.log.2026-08-02
-
     formatter = logging.Formatter(_FORMAT)
-    console.setFormatter(formatter)
-    file_handler.setFormatter(formatter)
 
-    root.addHandler(console)
-    root.addHandler(file_handler)
+    if not root.handlers:
+        console = logging.StreamHandler()
+        console.setLevel(level)
+        console.setFormatter(formatter)
+        root.addHandler(console)
+
+    log_path = LOG_DIR / _LOG_FILE
+    file_handler = next(
+        (
+            handler
+            for handler in root.handlers
+            if isinstance(handler, TimedRotatingFileHandler)
+            and Path(handler.baseFilename) == log_path
+        ),
+        None,
+    )
+    if file_handler is None:
+        file_handler = TimedRotatingFileHandler(
+            log_path,
+            when="midnight",
+            interval=1,
+            backupCount=30,
+            encoding="utf-8",
+            utc=False,
+        )
+        file_handler.suffix = "%Y-%m-%d"
+        root.addHandler(file_handler)
+    file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
 
 
 class ProgressLogger:

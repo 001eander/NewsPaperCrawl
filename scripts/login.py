@@ -32,6 +32,12 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+# 项目未安装为包,直接运行脚本时 sys.path[0] 是 scripts/ 而非项目根;
+# 与 scripts/status.py 一样手动补上项目根,才能读取 Settings 的默认路径
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from crawler.adapters.config import Settings
+
 # ---- 常量 ----
 # share 资源列表页(appId/typeId 指向 "方正数字报" 所在的资源列表)
 SHARE_URL = (
@@ -57,10 +63,11 @@ LOGIN_MAX_ATTEMPTS = 3
 # 提交登录后等待站点跳转到方正数字报的总超时(秒)
 LOGIN_REDIRECT_TIMEOUT = 90
 
-DEFAULT_CREDENTIALS = (
-    Path(__file__).resolve().parent.parent / ".secrets" / "credentials.json"
-)
-DEFAULT_COOKIES = Path(__file__).resolve().parent.parent / ".secrets" / "cookies.json"
+# 默认凭据/cookie 路径与爬虫共用 Settings(支持 NEWSPAPER_SECRETS_DIR 覆盖)。
+# run_login 显式传入路径时仍以传入值为准,CLI 行为不变。
+_SETTINGS = Settings.from_env()
+DEFAULT_CREDENTIALS = _SETTINGS.secrets_dir / "credentials.json"
+DEFAULT_COOKIES = _SETTINGS.secrets_dir / "cookies.json"
 
 
 def load_credentials(path: Path) -> dict:
