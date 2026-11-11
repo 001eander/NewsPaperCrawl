@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 异步爬虫,抓取浙江图书馆"方正数字报"电子报纸资源的**原始数据**(期次 → 版面 → 版面图 → 报道正文 + 配图)。目标是全国报纸清单(`archive/报纸清单.csv`,含刊号/刊期/出版地/订阅起止日期),通过图书馆代理镜像 `https://apabi--com.elib.zyproxy.zjlib.cn/zjlib/` 访问 apabi 站点。
 
 关键特性:
-- **认证依赖登录 cookie**(SSO 经 vpn358 中转,`vpn358_sid` 是关键会话 cookie),cookie 过期时爬虫抛 `AuthError` 并推 Bark 通知
+- **认证依赖登录 cookie**(SSO 经 vpn358 中转,`vpn358_sid` 是关键会话 cookie),cookie 过期时爬虫自动重新登录(`.secrets/credentials.json`);自动登录失败才抛 `AuthError` 并推 Bark 通知
 - **断点续跑**:所有阶段以 SQLite 的 `status` 列为状态机,可反复执行、跳过已完成项
 - **并发限流**:并发信号量控制请求数,连接忽略 HTTPS 证书校验(站点 TLS 证书过期)
 
@@ -22,7 +22,7 @@ uv run cli.py issues 2014 2026 --end-month 7   # 阶段1: 枚举期次(2014~2026
 uv run cli.py boards             # 阶段2: 抓版面/位置/版面图(省略 --limit 处理全部 pending)
 uv run cli.py articles           # 阶段3: 抓报道正文+配图(省略 --limit 处理全部 pending)
 uv run cli.py boards --paperid n.D330100hzrb --limit 10   # 限量或限定报纸跑阶段2
-uv run scripts/login.py          # Playwright 登录: 自动填表/验证码/提交,保存 cookie
+uv run scripts/login.py          # 手动登录(爬虫已内置自动登录,此命令仅用于排查凭据)
 ```
 
 `boards`/`articles` 阶段省略 `--limit` 即处理全部 pending 项;显式 `--limit N` 每轮限量、可分批续跑。
@@ -53,7 +53,7 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 
 状态机:每个表都有 `status` 列(`pending/processing/done/failed`),每阶段只取 `pending` 项处理。`processing` 是运行中的临时认领:服务层按小批 `claim_*` 原子认领,多个进程共享同一 pending 队列时不会重复抓同一行;崩溃后超过 1 小时租约的认领可被回收,正常退出/取消则由 `release_claims()` 立即退回。
 
-单实例保护:同一阶段启动时在数据库旁加文件锁(`crawl.db.{stage}.lock`),已有进程在跑时后启动者以退出码 2 结束;`scripts/run_articles_loop.py` 遇到退出码 2 会等待后重试,不会误触发重新登录。
+单实例保护:同一阶段启动时在数据库旁加文件锁(`crawl.db.{stage}.lock`),已有进程在跑时后启动者以退出码 2 结束;外部调度(cron/计划任务)可据此识别"已有实例在跑",与真正的失败(退出码 1)区分。
 
 ### 数据双存储(重要约定)
 
@@ -85,23 +85,25 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 - [crawler/services/pipeline.py](crawler/services/pipeline.py) — 服务层:`CrawlService` 编排四阶段,只依赖 domain 规则、三个端口与并发度
 - [crawler/adapters/](crawler/adapters/) — 适配器层,端口的具体实现:
   - `apabi_parser.py` — 纯函数 HTML/XML 解析(BeautifulSoup + 正则)与全部 URL 构造(`build_*` 系列)。**全部基于文本解析,不依赖浏览器**;解析逻辑是"浏览器验证过"的固化成代码
-  - `apabi_http.py` — aiohttp 异步会话:并发限流、重试(指数退避)、cookie 注入、认证失效检测(重定向到登录域 / 响应含登录页特征)
-  - `cookie_auth.py` — 加载 cookie(兼容 Playwright 导出的 list 格式与旧 dict 格式,按 domain 匹配注入);失效判定委托领域规则
+  - `apabi_http.py` — aiohttp 异步会话:并发限流、重试(指数退避)、cookie 注入、认证失效检测(重定向到登录域 / 响应含登录页特征);判定失效后先触发自动登录再重试,仍失败才通知并抛错
+  - `cookie_auth.py` — 加载 cookie(兼容 Playwright 导出的 list 格式与旧 dict 格式,按 domain 匹配注入);失效判定委托领域规则;`relogin()` 用锁 + 代数实现并发去重(多个请求同时撞上登录页只登录一次),成功后热加载 cookies.json,120s 冷却期内不再重复登录
   - `sqlite_repo.py` — 全部 SQLite 操作与表结构(`SCHEMA`);含旧库迁移(articles.content → content_path、补认领列,幂等);`claim_issues`/`claim_articles` 在 `BEGIN IMMEDIATE` 事务里原子认领
   - `instance_lock.py` — 同阶段单实例文件锁(Windows `msvcrt` / POSIX `flock`),进程退出自动释放
   - `bark.py` — Bark 手机推送,未配置/失败返回 False(推送必须 await 完成,见本节末);用 certifi 根证书校验 TLS,CA 文件随 sidecar 打包
   - `fs_storage.py` — 正文 JSON / 位置 JSON 落盘到 `DATA_DIR`
   - `paperlist_csv.py` — 报纸清单 CSV → `domain.Paper` 列表
-  - `config.py` — `Settings`(frozen dataclass):所有运行时路径统一收口,支持 `NEWSPAPER_*` 环境变量覆盖
+  - `sso_login.py` — SSO 自动登录(Playwright 同步 API,异步入口跑在线程池):打开 share 资源页 → 点"方正数字报"让 JS 弹出新标签页 → 自动填账号/选机构/填验证码/点登录 → 轮询到 `vpn358_sid` 后保存全部 cookie。验证码由页面本地 GVerify 生成,答案存在 Vue 实例里,直接读取即可(登录接口不校验验证码)
+  - `config.py` — `Settings`(frozen dataclass):所有运行时路径统一收口,支持 `NEWSPAPER_*` 环境变量覆盖(含 `NEWSPAPER_LOGIN_HEADLESS`,默认 1)
 - [crawler/bootstrap.py](crawler/bootstrap.py) — 组合根:读配置、建适配器、注入服务,并负责收尾通知(正常完成 / 认证失效 / 异常中断;`import` 阶段不构造 HttpClient,也不推送)
 - [crawler/logging_config.py](crawler/logging_config.py) — 控制台 + 按日滚动文件双通道,幂等;`ProgressLogger` 用于高频事件节流(如报道落库)
-- [scripts/login.py](scripts/login.py) — Playwright 同步登录流程:打开 share 资源页 → 点"方正数字报"让 JS 弹出新标签页 → 自动填账号/选机构/填验证码/点登录 → 轮询到 `vpn358_sid` 后保存全部 cookie。验证码由页面本地 GVerify 生成,答案存在 Vue 实例里,读取前用 `wait_for_function` 等 code 初始化完成(登录接口不校验验证码)
+- [scripts/login.py](scripts/login.py) — 手动登录命令行壳,复用 `adapters/sso_login.py`;爬虫认证失效时自行登录,无需人工执行。读取验证码前用 `wait_for_function` 等 GVerify code 初始化完成
 
 ### 认证与通知
 
 - `.secrets/cookies.json`(gitignore)存登录 cookie,`vpn358_sid` 是核心会话 cookie
 - `.secrets/credentials.json` 存账号密码,`.secrets/bark.json` 存 Bark 设备 key;均有 `.example` 模板
-- 认证失效 → 抛 `AuthError` → `bootstrap.run_stage` 推 Bark、`cli.py` 以非零码退出(便于 cron/systemd 感知)
+- 自动登录:启动时 cookies 缺失/不可读、或运行中检测到认证失效,爬虫直接用凭据登录(默认 headless)并热加载新 cookie 后继续;`NEWSPAPER_LOGIN_HEADLESS=0` 可在本机观察登录过程
+- 自动登录失败(凭据缺失/错误、浏览器启动失败、站点拒绝)才抛 `AuthError` → `bootstrap.run_stage` 推 Bark、`cli.py` 以非零码退出(便于 cron/systemd 感知)
 - 每次运行收尾(正常完成/认证失效/异常中断)都会推 Bark;推送是异步 I/O,必须在 `run_stage` 返回前 await 完成,挂后台任务会被事件循环关闭时取消
 
 ## 桌面分发与更新

@@ -4,7 +4,7 @@
 唯一的装配点:读配置、建适配器、注入服务,再把对应阶段跑起来。
 cli.py 只负责参数解析与异常出口,"谁依赖谁"的知识全部集中在这里。
 
-import 阶段不构造 HttpClient(它需要 cookies.json,缺失会抛 AuthError),
+import 阶段不构造 HttpClient(它需要 cookies.json,缺失时会先尝试自动登录),
 只读 CSV + 落库,因此不参与 Bark 通知——与旧入口行为一致。
 """
 
@@ -19,6 +19,7 @@ from .adapters.fs_storage import FileContentStore
 from .adapters.instance_lock import InstanceLock
 from .adapters.paperlist_csv import load_papers
 from .adapters.sqlite_repo import SqliteRepository
+from .adapters.sso_login import SsoLogin
 from .domain.exceptions import AuthError
 from .logging_config import setup_logging
 from .services.pipeline import CrawlService
@@ -57,7 +58,7 @@ async def _run_crawl_stage(stage: str, settings: Settings, kwargs: dict) -> None
     n = 0
     try:
         await repo.init()
-        auth = AuthManager(settings.secrets_dir / "cookies.json")
+        auth = await _build_auth(settings)
         async with HttpClient(auth, notifier, concurrency=concurrency) as http:
             service = CrawlService(
                 http,
@@ -103,6 +104,23 @@ async def _run_crawl_stage(stage: str, settings: Settings, kwargs: dict) -> None
             logger.warning("关闭数据库连接失败: %s", e)
 
 
+async def _build_auth(settings: Settings) -> AuthManager:
+    """构造认证管理器;cookies 缺失或不可读且凭据齐全时,先自动登录再爬"""
+    login = SsoLogin(
+        settings.secrets_dir / "credentials.json",
+        settings.secrets_dir / "cookies.json",
+        headless=settings.login_headless,
+    )
+    try:
+        return AuthManager(login.cookies_file, login)
+    except AuthError:
+        if not login.can_login():
+            raise
+        logger.info("cookies 缺失或不可读,先执行自动登录")
+        await login.login()
+        return AuthManager(login.cookies_file, login)
+
+
 async def _notify_job_result(
     notifier: BarkNotifier,
     *,
@@ -120,8 +138,11 @@ async def _notify_job_result(
       "error"     未知错误导致中断
     """
     if outcome == "auth":
-        title = "浙图爬虫:需要重新登录"
-        body = "登录状态失效,请重新执行登录后继续爬取"
+        title = "浙图爬虫:需要人工处理登录"
+        body = (
+            "自动登录未能恢复会话,请检查 .secrets/credentials.json "
+            "或手动执行 uv run scripts/login.py"
+        )
     elif outcome == "error":
         title = "浙图爬虫:异常中断"
         body = f"阶段 {stage} 运行出错: {message or '未知错误'}"

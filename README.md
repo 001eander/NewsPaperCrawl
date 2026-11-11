@@ -22,7 +22,7 @@
 2. 在“运行”页点击“登录”，应用会自动完成 SSO 并保存 cookie。
 3. 依次执行 `import`、`issues`、`boards`、`articles`。各阶段可重复运行，已完成项会跳过。
 4. 在“状态”页查看总进度和最近失败，在“日志”页查看实时输出。
-5. 认证失效时重新登录。`failed` 项可用 `scripts/retry_failed.py` 重置后重试。
+5. 认证失效时爬虫会自动重新登录；自动登录失败才需人工处理。`failed` 项可用 `scripts/retry_failed.py` 重置后重试。
 
 “关于/更新”页可以检查正式 Release。发现新版本后，点击更新即可下载、验签、安装并重启。爬取或登录仍在运行时需先停止；更新不会删除数据库、图片、配置或浏览器。桌面应用采用单实例，重复启动只会激活已有窗口，避免重复任务与通知。Bark 使用随应用打包的 CA 证书，测试推送仅在服务端实际接受后提示成功。
 
@@ -32,7 +32,7 @@
 
 应用不会自动移动源码版的旧数据。迁移前先退出旧爬虫，再把源码目录中的 `data/`、`.secrets/` 和需要保留的 `logs/` 复制到安装版对应目录；不要覆盖已经产生的新数据。SQLite 相对路径约定不变。
 
-源码 CLI 和 Docker 的默认路径不变：
+源码 CLI 的默认路径不变：
 
 - SQLite：`data/crawl.db`；正文与图片在 `data/articles/`、`data/boards/` 等目录。
 - 凭据与 cookie：`.secrets/`。
@@ -48,10 +48,11 @@ uv run cli.py import
 uv run cli.py issues 2014 2026 --end-month 7
 uv run cli.py boards
 uv run cli.py articles
-uv run scripts/login.py
+uv run scripts/login.py  # 手动登录或排查凭据
+uv run gui.py            # 可选:旧 Tkinter 界面
 ```
 
-`boards` 和 `articles` 可用 `--limit` 分批执行；各阶段也支持 `--concurrency`。Docker 仍使用 `Dockerfile` 和 `compose.yaml`。
+`boards` 和 `articles` 可用 `--limit` 分批执行；各阶段也支持 `--concurrency`。爬虫默认在后台自动登录；设置 `NEWSPAPER_LOGIN_HEADLESS=0` 可显示登录浏览器。
 
 ## 桌面开发
 

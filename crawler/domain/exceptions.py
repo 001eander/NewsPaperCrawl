@@ -7,3 +7,7 @@
 
 class AuthError(Exception):
     """认证失效异常"""
+
+
+class LoginError(AuthError):
+    """自动登录失败(凭据缺失、浏览器启动失败、登录被拒等)"""

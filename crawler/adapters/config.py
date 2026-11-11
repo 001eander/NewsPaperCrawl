@@ -11,6 +11,7 @@
   NEWSPAPER_CONCURRENCY  HTTP 并发上限(默认 16)
   NEWSPAPER_SECRETS_DIR  认证与通知配置目录(默认 .secrets)
   NEWSPAPER_PAPERLIST_CSV  报纸清单 CSV 路径(默认项目根目录 报纸清单.csv)
+  NEWSPAPER_LOGIN_HEADLESS 爬虫内自动登录是否隐藏浏览器(默认 1;置 0 可看登录过程)
 
 均可通过 export 覆盖。
 """
@@ -25,6 +26,13 @@ def _env(name: str, default: Path) -> Path:
     return Path(v) if v else default
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None or not v.strip():
+        return default
+    return v.strip().lower() not in {"0", "false", "no", "off"}
+
+
 @dataclass(frozen=True)
 class Settings:
     """运行时路径与并发/日志参数(构造后不可变)"""
@@ -36,6 +44,8 @@ class Settings:
     secrets_dir: Path
     db_path: Path
     paperlist_csv: Path
+    # 只影响爬虫内自动登录;给默认值便于测试夹具构造 Settings
+    login_headless: bool = True
 
     @classmethod
     def from_env(cls, base_dir: Path | None = None) -> "Settings":
@@ -52,4 +62,5 @@ class Settings:
             paperlist_csv=_env(
                 "NEWSPAPER_PAPERLIST_CSV", base / "archive" / "报纸清单.csv"
             ),
+            login_headless=_env_flag("NEWSPAPER_LOGIN_HEADLESS", True),
         )

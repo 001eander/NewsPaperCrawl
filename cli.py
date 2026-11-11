@@ -10,7 +10,7 @@
   uv run cli.py articles --limit 100        # 阶段3: 抓报道正文+配图(省略 --limit 处理全部 pending)
 
 所有阶段可反复执行,自动跳过已完成(status=done)。
-认证失效时自动通过 Bark 通知你重新登录。
+认证失效时自动重新登录(凭据在 .secrets/credentials.json),失败才通过 Bark 通知人工处理。
 """
 
 import argparse
@@ -22,7 +22,7 @@ from crawler.bootstrap import run_stage
 from crawler.domain.exceptions import AuthError
 from crawler.logging_config import setup_logging
 
-# 与 AuthError(1)区分:循环脚本据此判断无需重新登录
+# 与 AuthError(1)区分:外部调度(cron/计划任务)据此识别"已有实例在跑"
 EXIT_ALREADY_RUNNING = 2
 
 
@@ -85,11 +85,11 @@ def main():
         logging.getLogger(__name__).error("%s", e)
         raise SystemExit(EXIT_ALREADY_RUNNING) from None
     except AuthError as e:
-        # 认证失效:已由 run_stage() 推送 Bark,这里给出可操作提示并以非零码退出
-        # (便于 cron/systemd 感知失败)
+        # 认证失效且自动登录未成功:已由 run_stage() 推送 Bark,
+        # 这里给出可操作提示并以非零码退出(便于 cron/systemd 感知失败)
         logging.getLogger(__name__).error(
-            "认证失效: %s\n已通过 Bark 推送通知,请重新执行 uv run scripts/login.py "
-            "更新登录状态后再试",
+            "认证失效: %s\n自动登录未能恢复会话,已通过 Bark 推送通知;"
+            "可手动执行 uv run scripts/login.py 排查凭据后再试",
             e,
         )
         raise SystemExit(1) from None

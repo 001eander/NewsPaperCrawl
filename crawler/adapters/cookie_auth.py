@@ -5,26 +5,45 @@ Cookie 认证适配器
 - 功能:
     * 加载/保存 cookie
     * 构造 Cookie 请求头(按域名匹配)
-    * 判定认证是否失效(委托领域规则;失效后的通知与抛错由 HTTP 适配器负责)
+    * 判定认证是否失效(委托领域规则)
+    * 失效时调用注入的 LoginRunner 重新登录并热加载新 cookie
+- 通知与抛错由 HTTP 适配器负责,本适配器只管凭据本身
 """
 
+import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 
-from ..domain.exceptions import AuthError
+from ..domain.exceptions import AuthError, LoginError
 from ..domain.rules import response_is_auth_fail
+from ..ports.auth import LoginRunner
 
 logger = logging.getLogger(__name__)
 
+# 自动登录成功后,同一会话短时间内不再重复登录:若站点仍判定失效(账号权限等),
+# 反复拉起浏览器只会拖垮整轮爬取,交给人工处理更合适
+MIN_RELOGIN_INTERVAL = 120.0
+
 
 class AuthManager:
-    """实现 AuthProvider:加载登录 cookie 并构造 Cookie 请求头"""
+    """实现 AuthProvider:加载登录 cookie、构造 Cookie 请求头、失效时重新登录"""
 
-    def __init__(self, cookies_file: Path):
+    def __init__(self, cookies_file: Path, login: LoginRunner | None = None):
         self.cookies_file = Path(cookies_file)
+        self._login = login
         self.cookies: dict[str, str] = {}
+        self._cookie_by_domain: dict[str, dict[str, str]] = {}
+        # 每成功登录一次加一;并发调用靠它判断"别人已经刷新过了"
+        self._generation = 0
+        self._lock = asyncio.Lock()
+        self._last_login_at = float("-inf")
         self._load()
+
+    @property
+    def generation(self) -> int:
+        return self._generation
 
     def _load(self):
         """从 cookies.json 加载 cookie,兼容两种格式:
@@ -34,15 +53,16 @@ class AuthManager:
         if not self.cookies_file.exists():
             raise AuthError(
                 f"缺少认证文件 {self.cookies_file}\n"
-                "请参考 .secrets/cookies.json.example 创建,填入浏览器里的登录 cookie"
+                "请参考 .secrets/cookies.json.example 创建,或配置 .secrets/credentials.json "
+                "让爬虫自动登录"
             )
         try:
             data = json.loads(self.cookies_file.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
             raise AuthError(f"cookies.json 解析失败: {e}") from e
 
-        self.cookies = {}
-        self._cookie_by_domain: dict[str, dict[str, str]] = {}
+        cookies: dict[str, str] = {}
+        by_domain: dict[str, dict[str, str]] = {}
 
         if isinstance(data, list):
             # 新格式: Playwright 导出的 cookie 列表
@@ -51,31 +71,34 @@ class AuthManager:
                 value = item.get("value")
                 if not name or value is None:
                     continue
-                self.cookies[name] = value
+                cookies[name] = value
                 domain = item.get("domain", "")
                 if domain:
-                    self._cookie_by_domain.setdefault(domain, {})[name] = value
+                    by_domain.setdefault(domain, {})[name] = value
         elif isinstance(data, dict):
             raw = data.get("cookies", data)  # 兼容 {"cookies": {...}} 或直接 {...}
             if isinstance(raw, dict):
-                self.cookies = {k: str(v) for k, v in raw.items() if v is not None}
+                cookies = {k: str(v) for k, v in raw.items() if v is not None}
                 # 旧格式无 domain 信息,全部归入空 domain
-                self._cookie_by_domain.setdefault("", self.cookies)
+                by_domain.setdefault("", cookies)
             elif isinstance(raw, list):
                 for item in raw:
                     name = item.get("name")
                     value = item.get("value")
                     if not name or value is None:
                         continue
-                    self.cookies[name] = value
+                    cookies[name] = value
                     domain = item.get("domain", "")
                     if domain:
-                        self._cookie_by_domain.setdefault(domain, {})[name] = value
+                        by_domain.setdefault(domain, {})[name] = value
         else:
             raise AuthError("cookies.json 格式无法识别")
 
-        if not self.cookies:
+        if not cookies:
             raise AuthError("cookies.json 为空,请填入登录 cookie")
+
+        self.cookies = cookies
+        self._cookie_by_domain = by_domain
 
     def save(self):
         """保存 cookie(认证更新后调用)"""
@@ -85,6 +108,35 @@ class AuthManager:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         logger.info("cookies 已保存到 %s", self.cookies_file)
+
+    async def relogin(self, seen_generation: int | None = None) -> bool:
+        """重新登录的唯一入口:并发调用只真正登录一次
+
+        返回 True 表示 cookie 已刷新(本次登录或别人刚登录过);
+        冷却期内重复触发返回 False,登录失败抛 LoginError。
+        """
+        if self._login is None:
+            raise LoginError(
+                "未配置自动登录;请在 .secrets/credentials.json 填写账号密码,"
+                "或手动执行 uv run scripts/login.py"
+            )
+        async with self._lock:
+            if seen_generation is not None and self._generation != seen_generation:
+                # 排队期间别的请求已经刷新过 cookie,直接用新的重试
+                return True
+            if time.monotonic() - self._last_login_at < MIN_RELOGIN_INTERVAL:
+                logger.warning(
+                    "自动登录后 %.0fs 内再次检测到认证失效,不再重复登录",
+                    MIN_RELOGIN_INTERVAL,
+                )
+                return False
+            logger.info("检测到认证失效,开始自动登录")
+            await self._login.login()
+            self._load()
+            self._generation += 1
+            self._last_login_at = time.monotonic()
+            logger.info("自动登录完成,cookie 已刷新(第 %s 代)", self._generation)
+            return True
 
     def cookie_header(self, url: str = "") -> str:
         """

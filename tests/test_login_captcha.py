@@ -1,6 +1,7 @@
 import pytest
 
-from scripts.login import read_captcha_code
+from crawler.adapters.sso_login import _read_captcha_code as read_captcha_code
+from crawler.domain.exceptions import LoginError
 
 
 class _Page:
@@ -26,5 +27,5 @@ def test_captcha_waits_for_gverify_initialization():
 
 def test_captcha_rejects_empty_code():
     page = _Page("")
-    with pytest.raises(RuntimeError, match="未能从登录页读取验证码"):
+    with pytest.raises(LoginError, match="未能从登录页读取验证码"):
         read_captcha_code(page)

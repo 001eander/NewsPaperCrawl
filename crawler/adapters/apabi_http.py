@@ -4,7 +4,7 @@ APABI 站点 HTTP 适配器
 实现 HttpGateway:
 - aiohttp 异步会话
 - 并发信号量限流
-- 自动注入 cookie,检测认证失效(通知 + 抛 AuthError)
+- 自动注入 cookie,检测认证失效(先自动重新登录,失败才通知 + 抛 AuthError)
 - 证书校验关闭(对应浏览器的 --ignore-https-errors)
 """
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import aiohttp
 
-from ..domain.exceptions import AuthError
+from ..domain.exceptions import AuthError, LoginError
 from ..ports.auth import AuthProvider
 from ..ports.notifier import Notifier
 
@@ -68,21 +68,25 @@ class HttpClient:
             await self._session.close()
 
     async def get(self, url: str, **kwargs) -> str:
-        """GET 并返回文本,带认证检测 + 重试"""
+        """GET 并返回文本,带认证检测 + 自动重新登录 + 重试"""
         headers = kwargs.pop("headers", {})
-        headers["Cookie"] = self.auth.cookie_header(url)
         headers["User-Agent"] = (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
         )
+        # 开始请求前记下 cookie 代数:并发请求同时撞上登录页时,只有第一个真正
+        # 拉起浏览器登录,其余请求等它刷新完直接用新 cookie
+        generation = self.auth.generation
         # 重要:图片等静态资源不需要 Cookie(避免无谓暴露),但 html 需要
         # 代理会把个别请求 302 到 pub.mvc?pid=login&needIpAutoLogin=1,几秒后
         # 用同一份 cookie 重试即可恢复;单次命中不足以判定会话失效。登录页重试
-        # 不占用网络重试次数,重试耗尽才通知并抛 AuthError。
+        # 不占用网络重试次数,重试耗尽先自动重新登录,仍失败才通知并抛 AuthError。
         last_err: Exception | None = None
         net_attempts = 0
         auth_hits = 0
         while True:
+            # 自动登录会改写 cookies.json,每次尝试都重新拼 Cookie
+            headers["Cookie"] = self.auth.cookie_header(url)
             login_hit = False
             async with self._sem:
                 try:
@@ -113,9 +117,23 @@ class HttpClient:
             if login_hit:
                 auth_hits += 1
                 if auth_hits >= self.auth_retries:
+                    try:
+                        refreshed = await self.auth.relogin(generation)
+                    except AuthError as e:
+                        await self.notifier.notify(
+                            "浙图爬虫:自动登录失败",
+                            f"访问 {url} 时认证失效,自动登录未能完成",
+                        )
+                        raise LoginError(f"认证失效且自动登录失败: {e}") from e
+                    if refreshed:
+                        auth_hits = 0
+                        generation = self.auth.generation
+                        headers.pop("Connection", None)
+                        continue
                     await self.notifier.notify(
                         "浙图爬虫:认证失效",
-                        f"访问 {url} 时检测到登录跳转,请重新登录",
+                        f"访问 {url} 时检测到登录跳转,自动登录未能恢复会话,"
+                        "请检查登录状态",
                     )
                     raise last_err
                 # 被弹到 auto-login 页时,复用原连接可能仍停留在失效会话上

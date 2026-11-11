@@ -11,10 +11,15 @@ from crawler.adapters.apabi_http import HttpClient
 
 
 class _Auth:
+    generation = 0
+
     def cookie_header(self, url: str = "") -> str:
         return ""
 
     def is_auth_fail(self, text: str) -> bool:
+        return False
+
+    async def relogin(self, seen_generation: int | None = None) -> bool:
         return False
 
 
