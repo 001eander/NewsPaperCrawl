@@ -36,8 +36,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import multiprocessing
+import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 from collections.abc import Awaitable, Callable
@@ -65,7 +66,6 @@ from crawler.adapters.playwright_runtime import (
 from crawler.adapters.status_queries import StatusQueries
 from crawler.bootstrap import run_stage as default_run_stage
 from crawler.domain.exceptions import AuthError
-from scripts.login import run_login
 
 logger = logging.getLogger(__name__)
 
@@ -150,23 +150,6 @@ class _Operation:
 LoginRunner = Callable[[Path, Path, bool, _Operation], Awaitable[int]]
 
 
-def _login_child_entry(
-    credentials_path: str, cookies_path: str, headless: bool, error_channel: Any
-) -> None:
-    """在独立进程中执行登录，并把脱敏后的失败原因返回 sidecar。"""
-    if sys.stderr is not None:
-        sys.stdout = sys.stderr
-    try:
-        run_login(Path(credentials_path), Path(cookies_path), headless=headless)
-    except SystemExit as e:
-        if isinstance(e.code, str):
-            error_channel.send(e.code)
-        raise
-    except Exception as e:
-        error_channel.send(str(e) or type(e).__name__)
-        raise
-
-
 class DesktopCore:
     """JSON Lines 协议与操作生命周期"""
 
@@ -181,7 +164,7 @@ class DesktopCore:
         ensure_browser_func: Callable[..., bool] = ensure_browser,
         notifier_factory: Callable[[Path], Any] = BarkNotifier,
         login_runner: LoginRunner | None = None,
-        mp_context: Any | None = None,
+        process_factory: Callable[..., Any] | None = None,
     ) -> None:
         self._stdin = stdin if stdin is not None else sys.stdin
         self._stdout = stdout if stdout is not None else sys.stdout
@@ -191,7 +174,7 @@ class DesktopCore:
         self._ensure_browser = ensure_browser_func
         self._notifier_factory = notifier_factory
         self._login_runner = login_runner or self._run_login_process
-        self._mp_context = mp_context or multiprocessing.get_context("spawn")
+        self._process_factory = process_factory or subprocess.Popen
         self._operation: _Operation | None = None
         self._shutdown_requested = False
         self._write_lock = threading.Lock()
@@ -438,34 +421,40 @@ class DesktopCore:
         headless: bool,
         op: _Operation,
     ) -> int:
-        """spawn 登录子进程;cancel 时 terminate,join 在后台线程等待"""
-        read_channel, write_channel = self._mp_context.Pipe(duplex=False)
-        process = self._mp_context.Process(
-            target=_login_child_entry,
-            args=(str(credentials), str(cookies), bool(headless), write_channel),
-            name="newspapercrawl-login",
-        )
-        process.start()
-        write_channel.close()
-        op.process = process
-        op.terminate = process.terminate
-        if op.cancel_requested:
+        """启动轻量登录子进程;cancel 时 terminate,wait 在后台线程等待"""
+        command = [sys.executable]
+        if getattr(sys, "frozen", False):
+            command.append("--login-child")
+        else:
+            command.append(str(Path(__file__).with_name("desktop_login.py")))
+        command.extend(["--credentials", str(credentials), "--cookies", str(cookies)])
+        if headless:
+            command.append("--headless")
+
+        with tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        ) as error_output:
+            process = self._process_factory(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=error_output,
+            )
+            op.process = process
+            op.terminate = process.terminate
+            if op.cancel_requested:
+                try:
+                    process.terminate()
+                except Exception:  # 进程可能已退出
+                    logger.debug("终止登录子进程失败", exc_info=True)
             try:
-                process.terminate()
-            except Exception:  # 进程可能已退出
-                logger.debug("终止登录子进程失败", exc_info=True)
-        try:
-            await asyncio.to_thread(process.join)
-            try:
-                if read_channel.poll():
-                    op.error = read_channel.recv()
-            except EOFError:
-                pass
-            return process.exitcode if process.exitcode is not None else -1
-        finally:
-            read_channel.close()
-            op.process = None
-            op.terminate = None
+                await asyncio.to_thread(process.wait)
+                error_output.seek(0)
+                op.error = error_output.read().strip()
+                return process.returncode if process.returncode is not None else -1
+            finally:
+                op.process = None
+                op.terminate = None
 
     def _finish_operation(self, op: _Operation, outcome: str, message: str) -> None:
         if self._operation is op:
@@ -733,8 +722,6 @@ async def _serve(protocol_out: TextIO) -> None:
 
 def main() -> int:
     _configure_stdio_utf8()
-    # PyInstaller 冻结后,multiprocessing spawn 需要先走 freeze_support
-    multiprocessing.freeze_support()
     protocol_out = sys.stdout
     # stdout 是协议通道:把普通 print/第三方输出全部导到 stderr
     if sys.stderr is not None:

@@ -34,7 +34,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "packaging" / "newspapercrawl_core.spec"
-ENTRY = ROOT / "crawler" / "desktop_core.py"
+ENTRY = ROOT / "crawler" / "desktop_entry.py"
 DEFAULT_OUTPUT_DIR = ROOT / "src-tauri" / "binaries"
 BINARY_STEM = "newspapercrawl-core"
 

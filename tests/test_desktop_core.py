@@ -2,8 +2,8 @@
 桌面 sidecar 协议测试
 ====================
 
-用注入的 stdin/stdout、临时 Settings、stub run_stage 与 fake multiprocessing
-context 覆盖:
+用注入的 stdin/stdout、临时 Settings、stub run_stage 与 fake subprocess
+覆盖:
 
   - JSON Lines 协议、错误响应、state/status/failed
   - run 参数校验、单操作互斥、operation_done 的四种结果
@@ -15,12 +15,17 @@ context 覆盖:
 """
 
 import asyncio
+import importlib
 import io
 import json
 import logging
+import os
 import sqlite3
+import subprocess
+import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,9 +34,9 @@ from crawler.adapters.instance_lock import AlreadyRunningError
 from crawler.desktop_core import (
     DesktopCore,
     _configure_stdio_utf8,
-    _login_child_entry,
     configure_event_logging,
 )
+from crawler.desktop_login import _login_child_entry
 from crawler.domain.exceptions import AuthError
 
 SECRET = "test-only-secret"
@@ -518,11 +523,34 @@ def test_login_child_reports_system_exit_message(monkeypatch):
     def fail_login(*args, **kwargs):
         raise SystemExit("验证码错误")
 
-    monkeypatch.setattr("crawler.desktop_core.run_login", fail_login)
+    monkeypatch.setattr("crawler.desktop_login.run_login", fail_login)
     channel = _FakeConnection()
     with pytest.raises(SystemExit):
         _login_child_entry("credentials", "cookies", False, channel)
     assert channel.messages == ["验证码错误"]
+
+
+def test_login_child_writes_utf8_error(tmp_path):
+    env = os.environ.copy()
+    env.pop("PYTHONIOENCODING", None)
+    env["PYTHONUTF8"] = "0"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "crawler/desktop_login.py",
+            "--credentials",
+            str(tmp_path / "missing-credentials.json"),
+            "--cookies",
+            str(tmp_path / "cookies.json"),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "找不到凭据文件" in result.stderr.decode("utf-8")
 
 
 def test_login_cancel_terminates_runner(tmp_path):
@@ -556,79 +584,67 @@ def test_login_cancel_terminates_runner(tmp_path):
 
 
 class _FakeProcess:
-    """替代 multiprocessing.Process:不真正 spawn,join 等待 terminate"""
+    """替代 subprocess.Popen:不启动进程,wait 等待 terminate"""
 
-    def __init__(self, *, target, args, name, blocking: bool):
-        self.target = target
-        self.args = args
-        self.name = name
-        self.exitcode: int | None = None
+    def __init__(self, command, kwargs, *, blocking: bool, returncode: int):
+        self.command = command
+        self.kwargs = kwargs
+        self.returncode: int | None = None
         self.terminated = False
         self.done = threading.Event()
         if not blocking:
-            self.exitcode = 0
+            self.returncode = returncode
             self.done.set()
 
-    def start(self) -> None:
-        return None
-
-    def join(self) -> None:
+    def wait(self) -> int | None:
         self.done.wait(timeout=2)
+        return self.returncode
 
     def terminate(self) -> None:
         self.terminated = True
-        self.exitcode = -15
+        self.returncode = -15
         self.done.set()
 
     def kill(self) -> None:
-        self.exitcode = -9
+        self.returncode = -9
         self.done.set()
 
 
 class _FakeConnection:
-    def __init__(self, *, eof: bool = False):
+    def __init__(self):
         self.messages = []
-        self.eof = eof
 
     def send(self, message):
         self.messages.append(message)
 
-    def poll(self):
-        return self.eof or bool(self.messages)
 
-    def recv(self):
-        if self.eof:
-            raise EOFError
-        return self.messages.pop(0)
-
-    def close(self):
-        return None
-
-
-class _FakeMPContext:
-    def __init__(self, blocking: bool = False, eof: bool = False):
+class _FakeProcessFactory:
+    def __init__(self, *, blocking: bool = False, returncode: int = 0, error: str = ""):
         self.blocking = blocking
-        self.eof = eof
+        self.returncode = returncode
+        self.error = error
         self.processes: list[_FakeProcess] = []
 
-    def Pipe(self, *, duplex):
-        return _FakeConnection(eof=self.eof), _FakeConnection()
-
-    def Process(self, *, target, args, name):
+    def __call__(self, command, **kwargs):
         process = _FakeProcess(
-            target=target, args=args, name=name, blocking=self.blocking
+            command,
+            kwargs,
+            blocking=self.blocking,
+            returncode=self.returncode,
         )
         self.processes.append(process)
+        if self.error:
+            kwargs["stderr"].write(self.error)
         return process
 
 
-def test_login_uses_spawn_context(tmp_path):
-    context = _FakeMPContext()
+def test_login_uses_lightweight_subprocess(tmp_path):
+    factory = _FakeProcessFactory()
 
     async def scenario():
         core, out = _core(
             tmp_path,
-            mp_context=context,
+            process_factory=factory,
             browser_installed_func=lambda: True,
         )
         await _send(core, {"id": "1", "command": "login"})
@@ -637,26 +653,87 @@ def test_login_uses_spawn_context(tmp_path):
 
     out = asyncio.run(scenario())
     assert _operation_done(out)["outcome"] == "done"
-    assert len(context.processes) == 1
-    process = context.processes[0]
-    assert process.target.__name__ == "_login_child_entry"
+    assert len(factory.processes) == 1
+    process = factory.processes[0]
     settings = _settings(tmp_path)
-    assert process.args[:3] == (
+    assert process.command[0] == sys.executable
+    assert Path(process.command[1]).name == "desktop_login.py"
+    assert process.command[2:] == [
+        "--credentials",
         str(settings.secrets_dir / "credentials.json"),
+        "--cookies",
         str(settings.secrets_dir / "cookies.json"),
-        False,
-    )
-    assert isinstance(process.args[3], _FakeConnection)
-    assert process.name == "newspapercrawl-login"
+    ]
+    assert process.kwargs["stdin"] == subprocess.DEVNULL
+    assert process.kwargs["stdout"] == subprocess.DEVNULL
+    assert process.kwargs["stderr"] is not None
 
 
-def test_login_success_tolerates_closed_error_channel(tmp_path):
-    context = _FakeMPContext(eof=True)
+def test_login_frozen_subprocess_command_and_headless(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    factory = _FakeProcessFactory()
 
     async def scenario():
         core, out = _core(
             tmp_path,
-            mp_context=context,
+            process_factory=factory,
+            browser_installed_func=lambda: True,
+        )
+        await _send(
+            core,
+            {"id": "1", "command": "login", "params": {"headless": True}},
+        )
+        await core.wait_idle()
+        return out
+
+    asyncio.run(scenario())
+    command = factory.processes[0].command
+    assert command[:2] == [sys.executable, "--login-child"]
+    assert command[-1] == "--headless"
+
+
+def test_login_worker_import_does_not_load_desktop_core():
+    code = (
+        "import sys\n"
+        "import crawler.desktop_login\n"
+        "assert 'crawler.desktop_core' not in sys.modules\n"
+        "assert 'crawler.bootstrap' not in sys.modules\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_frozen_entry_dispatches_login_before_core_import(monkeypatch):
+    entry = importlib.import_module("crawler.desktop_entry")
+    events = []
+    fake_login = SimpleNamespace(main=lambda argv: events.append(argv) or 0)
+    fake_core = SimpleNamespace(main=lambda: events.append("core") or 0)
+    monkeypatch.setitem(sys.modules, "crawler.desktop_login", fake_login)
+    monkeypatch.setitem(sys.modules, "crawler.desktop_core", fake_core)
+
+    args = ["--credentials", "credentials", "--cookies", "cookies"]
+    assert entry.main(["--login-child", *args]) == 0
+    assert events == [args]
+    assert entry.main([]) == 0
+    assert events == [args, "core"]
+
+
+def test_login_process_reads_error_output(tmp_path):
+    factory = _FakeProcessFactory(returncode=1, error="读者账号或密码错误\n")
+
+    async def scenario():
+        core, out = _core(
+            tmp_path,
+            process_factory=factory,
             browser_installed_func=lambda: True,
         )
         await _send(core, {"id": "1", "command": "login"})
@@ -664,31 +741,54 @@ def test_login_success_tolerates_closed_error_channel(tmp_path):
         return out
 
     event = _operation_done(asyncio.run(scenario()))
-    assert event["outcome"] == "done"
-    assert event["message"] == "登录完成"
+    assert event["outcome"] == "error"
+    assert event["message"] == "读者账号或密码错误"
 
 
 def test_login_cancel_terminates_real_process_path(tmp_path):
-    context = _FakeMPContext(blocking=True)
+    factory = _FakeProcessFactory(blocking=True)
 
     async def scenario():
         core, out = _core(
             tmp_path,
-            mp_context=context,
+            process_factory=factory,
             browser_installed_func=lambda: True,
         )
         await _send(core, {"id": "1", "command": "login"})
         for _ in range(100):
             await asyncio.sleep(0.001)
-            if context.processes:
+            if factory.processes:
                 break
         await _send(core, {"id": "2", "command": "cancel"})
         await core.wait_idle()
         return out
 
     out = asyncio.run(scenario())
-    assert context.processes[0].terminated is True
+    assert factory.processes[0].terminated is True
     assert _operation_done(out)["outcome"] == "stopped"
+
+
+def test_shutdown_terminates_login_process(tmp_path):
+    factory = _FakeProcessFactory(blocking=True)
+
+    async def scenario():
+        core, out = _core(
+            tmp_path,
+            process_factory=factory,
+            browser_installed_func=lambda: True,
+        )
+        await _send(core, {"id": "1", "command": "login"})
+        for _ in range(100):
+            await asyncio.sleep(0.001)
+            if factory.processes:
+                break
+        await _send(core, {"id": "2", "command": "shutdown"})
+        return out
+
+    out = asyncio.run(scenario())
+    assert factory.processes[0].terminated is True
+    assert _operation_done(out)["outcome"] == "stopped"
+    assert _responses(out)[1]["result"] == {"shutdown": True}
 
 
 # ---------------------------------------------------------------- 配置 / Bark

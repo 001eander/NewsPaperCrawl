@@ -108,7 +108,7 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 
 ## 桌面分发与更新
 
-桌面端是 Tauri 2 + Vite/TypeScript,不重写爬虫业务:`desktop/` 为界面,`src-tauri/` 为 Rust 窗口与 sidecar 生命周期管理,`crawler/desktop_core.py` 以 JSON Lines 处理状态、运行、取消、登录与配置。`tauri-plugin-single-instance` 限制单个桌面实例,重复启动只聚焦已有窗口;阶段锁仍负责 CLI 与桌面端互斥。Python sidecar 由 PyInstaller onefile 构建,配置在 `packaging/`,按 Rust target triple 命名后放入 `src-tauri/binaries/`。
+桌面端是 Tauri 2 + Vite/TypeScript,不重写爬虫业务:`desktop/` 为界面,`src-tauri/` 为 Rust 窗口与 sidecar 生命周期管理,`crawler/desktop_core.py` 以 JSON Lines 处理状态、运行、取消、登录与配置。冻结版入口 `crawler/desktop_entry.py` 在导入桌面核心前分流 `--login-child`;登录通过显式 `subprocess.Popen` 启动轻量 `crawler/desktop_login.py`,不要使用 `multiprocessing.spawn`(Windows 下会与后台 stdin 读取共同阻塞浏览器启动),保留 terminate/kill 取消能力,脱敏错误经临时文件回传。`tauri-plugin-single-instance` 限制单个桌面实例,重复启动只聚焦已有窗口;阶段锁仍负责 CLI 与桌面端互斥。Python sidecar 由 PyInstaller onefile 构建,配置在 `packaging/`,按 Rust target triple 命名后放入 `src-tauri/binaries/`。
 
 安装版由 Rust 注入 `NEWSPAPER_*` 与 `PLAYWRIGHT_BROWSERS_PATH`:数据、凭据和浏览器位于系统应用数据目录,日志位于应用日志目录,报纸清单来自 bundle 资源。源码 CLI 默认路径不变。Chromium 不随安装包分发,首次登录时下载到用户目录。不要自动迁移或覆盖源码版旧数据。
 

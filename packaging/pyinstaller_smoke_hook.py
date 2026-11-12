@@ -24,6 +24,8 @@ SMOKE_OK = "SIDECAR_SMOKE_OK"
 IMPORTS = (
     "crawler",
     "crawler.bootstrap",
+    "crawler.desktop_entry",
+    "crawler.desktop_login",
     "crawler.services.pipeline",
     "crawler.adapters.apabi_http",
     "crawler.adapters.sqlite_repo",

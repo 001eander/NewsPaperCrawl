@@ -1,7 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller onefile 配置:桌面端 Python sidecar
 ================================================
-入口是 ``crawler/desktop_core.py``(由 Tauri 通过 sidecar 协议启动),打包内容:
+默认入口是 ``crawler/desktop_entry.py``(先分流轻量登录子进程),
+桌面协议仍由 ``crawler/desktop_core.py`` 处理。打包内容:
 
 * ``crawler`` 全部子模块(四阶段流水线 + SQLite/HTTP 适配器)
 * ``scripts.login`` 及其依赖
@@ -24,13 +25,11 @@ import playwright
 ROOT = Path(SPECPATH).resolve().parent
 ENTRY = Path(
     os.environ.get(
-        "NEWSPAPERCRAWL_SIDECAR_ENTRY", ROOT / "crawler" / "desktop_core.py"
+        "NEWSPAPERCRAWL_SIDECAR_ENTRY", ROOT / "crawler" / "desktop_entry.py"
     )
 ).resolve()
 if not ENTRY.is_file():
-    raise SystemExit(
-        f"找不到 sidecar 入口 {ENTRY};crawler/desktop_core.py 尚未实现时无法打包"
-    )
+    raise SystemExit(f"找不到 sidecar 入口 {ENTRY},无法打包")
 
 # 默认保留控制台(Windows 用 hide-early 隐藏窗口),这样 Tauri 能通过
 # stdin/stdout 与 sidecar 通信;特殊诊断时可设环境变量改成 windowed。
