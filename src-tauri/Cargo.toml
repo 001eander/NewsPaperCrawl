@@ -1,6 +1,6 @@
 [package]
 name = "newspapercrawl"
-version = "0.2.4"
+version = "0.2.5"
 description = "浙图方正数字报爬虫"
 edition = "2021"
 rust-version = "1.90"
