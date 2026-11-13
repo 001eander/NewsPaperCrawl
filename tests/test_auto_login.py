@@ -1,12 +1,13 @@
 """
 自动登录与认证刷新测试
 ======================
-覆盖三件事,全部不触网、不启动浏览器:
+覆盖四件事,全部不触网、不启动浏览器:
   - AuthManager.relogin 的并发去重(同一时刻只真正登录一次)、代数去重、
     成功后热加载 cookie、冷却期内不重复登录
   - HttpClient 撞上登录页后自动重新登录再重试;登录失败/冷却拦截时
     通知并抛 AuthError
   - 凭据缺失/未填写时以 LoginError 报错,不进入 Playwright
+  - 原有及动态代理域的落地页识别,代理登录中转页不算落地
 """
 
 import asyncio
@@ -16,7 +17,12 @@ import pytest
 
 from crawler.adapters.apabi_http import HttpClient
 from crawler.adapters.cookie_auth import AuthManager
-from crawler.adapters.sso_login import SsoLogin
+from crawler.adapters.sso_login import (
+    SsoLogin,
+    _is_fangzheng_url,
+    _is_proxy_login,
+    _wait_for_fangzheng,
+)
 from crawler.domain.exceptions import AuthError, LoginError
 
 COOKIES = [
@@ -250,6 +256,67 @@ def test_get_reports_login_error():
 
     asyncio.run(scenario())
     assert notifier.messages and notifier.messages[0][0] == "浙图爬虫:自动登录失败"
+
+
+# ---------------- 落地页识别 ----------------
+
+
+class _LandedPage:
+    url = (
+        "https://apabi--com-s-553.elib.zyproxy.zjlib.cn/zjlib/"
+        "?pid=newspaper.index&cult=CN"
+    )
+
+    def title(self):
+        return "中华数字书苑-中华数字文明"
+
+
+def test_wait_for_fangzheng_accepts_dynamic_proxy_host():
+    page = _LandedPage()
+
+    class _Context:
+        def __init__(self):
+            self.pages = [page]
+
+    landed, error = _wait_for_fangzheng(_Context(), timeout=0.01)
+    assert landed is page
+    assert error is None
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "apabi--com.elib.zyproxy.zjlib.cn",
+        "apabi--com-s-553.elib.zyproxy.zjlib.cn",
+        "apabi--com-s-554.elib.zyproxy.zjlib.cn",
+    ],
+)
+def test_fangzheng_url_accepts_apabi_proxy_hosts(host):
+    url = f"https://{host}/zjlib/?pid=newspaper.index"
+    assert _is_fangzheng_url(url) is True
+    assert _is_proxy_login(url) is False
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "apabi--com.elib.zyproxy.zjlib.cn",
+        "apabi--com-s-553.elib.zyproxy.zjlib.cn",
+    ],
+)
+def test_proxy_login_is_not_fangzheng(host):
+    url = f"https://{host}/zjlib/pub.mvc?pid=login&needIpAutoLogin=1"
+    assert _is_proxy_login(url) is True
+    assert _is_fangzheng_url(url) is False
+
+
+def test_fangzheng_url_rejects_unrelated_host():
+    url = (
+        "https://example.com/apabi--com-s-553.elib.zyproxy.zjlib.cn/"
+        "?pid=newspaper.index"
+    )
+    assert _is_fangzheng_url(url) is False
+    assert _is_proxy_login(url) is False
 
 
 # ---------------- 凭据校验 ----------------

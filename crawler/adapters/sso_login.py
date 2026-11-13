@@ -25,8 +25,10 @@ OCR 或第三方识别服务。
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -48,8 +50,9 @@ SHARE_URL = (
 RESOURCE_NAME = "方正数字报"
 # SSO 登录页 URL 特征
 LOGIN_URL_MARKER = "sso/login"
-# apabi(方正数字报)代理域 URL 特征
-APABI_URL_MARKERS = ("apabi--com.elib.zyproxy.zjlib.cn",)
+# apabi(方正数字报)代理域主机名特征
+APABI_HOST = "apabi--com.elib.zyproxy.zjlib.cn"
+APABI_DYNAMIC_HOST = re.compile(r"apabi--com-s-\d+\.elib\.zyproxy\.zjlib\.cn")
 # 登录后要确认的关键会话 cookie
 VPN_COOKIE = "vpn358_sid"
 # 轮询关键会话 cookie 的超时与间隔(秒)
@@ -102,13 +105,18 @@ def _select_province_and_library(page) -> None:
     )
 
 
+def _is_apabi_url(url: str) -> bool:
+    hostname = urlsplit(url).hostname or ""
+    return hostname == APABI_HOST or APABI_DYNAMIC_HOST.fullmatch(hostname) is not None
+
+
 def _is_fangzheng_url(url: str) -> bool:
     """方正数字报落地页 URL 特征:apabi 代理域,或 share 域上的 area 落地页
 
     代理域的 pub.mvc?pid=login&needIpAutoLogin=1 是"还没登录成功"的中转页,
     不能算落地,否则会把无效 cookie 当成登录结果保存。
     """
-    if any(m in url for m in APABI_URL_MARKERS):
+    if _is_apabi_url(url):
         return "pid=login" not in url
     # SSO 登录成功后,落地页可能回跳到 share.zjlib.cn 的 area 页面
     return "share.zjlib.cn/entry/area/" in url
@@ -116,7 +124,7 @@ def _is_fangzheng_url(url: str) -> bool:
 
 def _is_proxy_login(url: str) -> bool:
     """apabi 代理的 auto-login 中转页(pub.mvc?pid=login):尚未完成授权"""
-    return any(m in url for m in APABI_URL_MARKERS) and "pid=login" in url
+    return _is_apabi_url(url) and "pid=login" in url
 
 
 def _is_fangzheng_page(page) -> bool:
