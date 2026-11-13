@@ -4,5 +4,6 @@
     "vpn358_sid": "在此粘贴 vpn358_sid 值",
     "ups_token": "在此粘贴 ups_token 值"
   },
-  "_说明": "从浏览器 DevTools 的 Cookie 里复制 apabi--com.elib.zyproxy.zjlib.cn 域的 cookies。爬虫认证过期时会自动登录并覆盖本文件,通常无需手工维护。"
+  "apabi_host": "apabi--com.elib.zyproxy.zjlib.cn",
+  "_说明": "从浏览器 DevTools 的 Cookie 里复制 APABI 代理域的 cookies。apabi_host 可省略;自动登录会从落地页保存实际的 apabi--com-s-<编号>.elib.zyproxy.zjlib.cn 域名并覆盖本文件,通常无需手工维护。"
 }

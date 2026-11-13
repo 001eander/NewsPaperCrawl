@@ -27,6 +27,11 @@ class AuthProvider(Protocol):
         """cookie 代数:每成功重新登录一次加一,用于并发调用去重"""
         ...
 
+    @property
+    def apabi_host(self) -> str | None:
+        """当前会话的 APABI 页面代理域;旧凭据没有此信息时为 None"""
+        ...
+
     def cookie_header(self, url: str = "") -> str:
         """构造 Cookie 请求头;提供 url 时按域名匹配,否则返回全部 cookie"""
         ...

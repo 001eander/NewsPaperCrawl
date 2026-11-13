@@ -12,6 +12,7 @@ from crawler.adapters.apabi_http import HttpClient
 
 class _Auth:
     generation = 0
+    apabi_host = None
 
     def cookie_header(self, url: str = "") -> str:
         return ""

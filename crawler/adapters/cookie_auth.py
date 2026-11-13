@@ -19,6 +19,7 @@ from pathlib import Path
 from ..domain.exceptions import AuthError, LoginError
 from ..domain.rules import response_is_auth_fail
 from ..ports.auth import LoginRunner
+from .apabi_proxy import normalize_apabi_host
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class AuthManager:
         self._login = login
         self.cookies: dict[str, str] = {}
         self._cookie_by_domain: dict[str, dict[str, str]] = {}
+        self.apabi_host: str | None = None
         # 每成功登录一次加一;并发调用靠它判断"别人已经刷新过了"
         self._generation = 0
         self._lock = asyncio.Lock()
@@ -46,9 +48,10 @@ class AuthManager:
         return self._generation
 
     def _load(self):
-        """从 cookies.json 加载 cookie,兼容两种格式:
+        """从 cookies.json 加载 cookie,兼容三种格式:
         - 旧格式: {"cookies": {"name": "value"}}
-        - 新格式: [{"name": "...", "value": "...", "domain": ".zjlib.cn"}, ...]  (Playwright 导出)
+        - Playwright 列表: [{"name": "...", "value": "...", "domain": ".zjlib.cn"}, ...]
+        - 会话格式: {"cookies": [...], "apabi_host": "apabi--com-s-553..."}
         """
         if not self.cookies_file.exists():
             raise AuthError(
@@ -63,9 +66,14 @@ class AuthManager:
 
         cookies: dict[str, str] = {}
         by_domain: dict[str, dict[str, str]] = {}
+        apabi_host = (
+            normalize_apabi_host(data.get("apabi_host"))
+            if isinstance(data, dict)
+            else None
+        )
 
         if isinstance(data, list):
-            # 新格式: Playwright 导出的 cookie 列表
+            # Playwright 直接导出的 cookie 列表
             for item in data:
                 name = item.get("name")
                 value = item.get("value")
@@ -99,11 +107,14 @@ class AuthManager:
 
         self.cookies = cookies
         self._cookie_by_domain = by_domain
+        self.apabi_host = apabi_host
 
     def save(self):
         """保存 cookie(认证更新后调用)"""
         self.cookies_file.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"cookies": self.cookies}
+        payload: dict[str, object] = {"cookies": self.cookies}
+        if self.apabi_host:
+            payload["apabi_host"] = self.apabi_host
         self.cookies_file.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )

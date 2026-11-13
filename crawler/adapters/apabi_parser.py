@@ -19,10 +19,11 @@ from bs4 import BeautifulSoup
 
 from ..domain.models import ArticlePosition, Board, ParsedArticle
 from ..domain.rules import extract_board_code, paper_image_code
+from .apabi_proxy import APABI_BASE_URL
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://apabi--com.elib.zyproxy.zjlib.cn/zjlib/"
+BASE_URL = APABI_BASE_URL
 
 
 # ---------------- 期次 ----------------

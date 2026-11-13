@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-异步爬虫,抓取浙江图书馆"方正数字报"电子报纸资源的**原始数据**(期次 → 版面 → 版面图 → 报道正文 + 配图)。目标是全国报纸清单(`archive/报纸清单.csv`,含刊号/刊期/出版地/订阅起止日期),通过图书馆代理镜像 `https://apabi--com.elib.zyproxy.zjlib.cn/zjlib/` 访问 apabi 站点。
+异步爬虫,抓取浙江图书馆"方正数字报"电子报纸资源的**原始数据**(期次 → 版面 → 版面图 → 报道正文 + 配图)。目标是全国报纸清单(`archive/报纸清单.csv`,含刊号/刊期/出版地/订阅起止日期),通过图书馆代理镜像访问 apabi 站点。登录落地页会使用 `apabi--com.elib.zyproxy.zjlib.cn` 或 `apabi--com-s-<编号>.elib.zyproxy.zjlib.cn`;当前域名随 cookie 保存,HTTP 层在每次请求前统一改写页面与同族图片代理 URL。
 
 关键特性:
 - **认证依赖登录 cookie**(SSO 经 vpn358 中转,`vpn358_sid` 是关键会话 cookie),cookie 过期时爬虫自动重新登录(`.secrets/credentials.json`);自动登录失败才抛 `AuthError` 并推 Bark 通知
@@ -85,8 +85,9 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 - [crawler/services/pipeline.py](crawler/services/pipeline.py) — 服务层:`CrawlService` 编排四阶段,只依赖 domain 规则、三个端口与并发度
 - [crawler/adapters/](crawler/adapters/) — 适配器层,端口的具体实现:
   - `apabi_parser.py` — 纯函数 HTML/XML 解析(BeautifulSoup + 正则)与全部 URL 构造(`build_*` 系列)。**全部基于文本解析,不依赖浏览器**;解析逻辑是"浏览器验证过"的固化成代码
-  - `apabi_http.py` — aiohttp 异步会话:并发限流、重试(指数退避)、cookie 注入、认证失效检测(重定向到登录域 / 响应含登录页特征);判定失效后先触发自动登录再重试,仍失败才通知并抛错
-  - `cookie_auth.py` — 加载 cookie(兼容 Playwright 导出的 list 格式与旧 dict 格式,按 domain 匹配注入);失效判定委托领域规则;`relogin()` 用锁 + 代数实现并发去重(多个请求同时撞上登录页只登录一次),成功后热加载 cookies.json,120s 冷却期内不再重复登录
+  - `apabi_proxy.py` — APABI 旧/动态代理域的严格识别与 URL 改写;页面和同族图片代理使用会话当前编号,直连 CDN 与无关主机不改写
+  - `apabi_http.py` — aiohttp 异步会话:并发限流、重试(指数退避)、cookie 注入、动态代理域改写、认证失效检测(重定向到登录域 / 响应含登录页特征);判定失效后先触发自动登录再重试,仍失败才通知并抛错
+  - `cookie_auth.py` — 加载 cookie 与会话代理域(兼容带 `apabi_host` 的会话格式、Playwright 导出的 list 格式与旧 dict 格式,按 domain 匹配注入);失效判定委托领域规则;`relogin()` 用锁 + 代数实现并发去重(多个请求同时撞上登录页只登录一次),成功后热加载 cookies.json,120s 冷却期内不再重复登录
   - `sqlite_repo.py` — 全部 SQLite 操作与表结构(`SCHEMA`);含旧库迁移(articles.content → content_path、补认领列,幂等);`claim_issues`/`claim_articles` 在 `BEGIN IMMEDIATE` 事务里原子认领
   - `instance_lock.py` — 同阶段单实例文件锁(Windows `msvcrt` / POSIX `flock`),进程退出自动释放
   - `bark.py` — Bark 手机推送,未配置/失败返回 False(推送必须 await 完成,见本节末);用 certifi 根证书校验 TLS,CA 文件随 sidecar 打包
@@ -100,7 +101,7 @@ uvx pre-commit run --all-files   # 手动跑全部钩子(ruff-format + ruff)
 
 ### 认证与通知
 
-- `.secrets/cookies.json`(gitignore)存登录 cookie,`vpn358_sid` 是核心会话 cookie
+- `.secrets/cookies.json`(gitignore)存登录 cookie 与当前 `apabi_host`,`vpn358_sid` 是核心会话 cookie;旧格式没有 `apabi_host` 时沿用旧域名,重新登录后自动补齐
 - `.secrets/credentials.json` 存账号密码,`.secrets/bark.json` 存 Bark 设备 key;均有 `.example` 模板
 - 自动登录:启动时 cookies 缺失/不可读、或运行中检测到认证失效,爬虫直接用凭据登录(默认 headless)并热加载新 cookie 后继续;`NEWSPAPER_LOGIN_HEADLESS=0` 可在本机观察登录过程
 - 自动登录失败(凭据缺失/错误、浏览器启动失败、站点拒绝)才抛 `AuthError` → `bootstrap.run_stage` 推 Bark、`cli.py` 以非零码退出(便于 cron/systemd 感知)

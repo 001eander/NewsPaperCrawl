@@ -28,24 +28,29 @@ from crawler.domain.exceptions import AuthError, LoginError
 COOKIES = [
     {"name": "vpn358_sid", "value": "old", "domain": ".zjlib.cn"},
 ]
+DYNAMIC_HOST = "apabi--com-s-553.elib.zyproxy.zjlib.cn"
+NEXT_DYNAMIC_HOST = "apabi--com-s-554.elib.zyproxy.zjlib.cn"
 
 
-def _write_cookies(path, value: str = "old") -> None:
-    path.write_text(
-        json.dumps(
-            [{"name": "vpn358_sid", "value": value, "domain": ".zjlib.cn"}],
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+def _write_cookies(path, value: str = "old", apabi_host: str | None = None) -> None:
+    payload: object = [{"name": "vpn358_sid", "value": value, "domain": ".zjlib.cn"}]
+    if apabi_host:
+        payload = {"cookies": payload, "apabi_host": apabi_host}
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 class _FakeLogin:
     """把新 cookie 写回文件,模拟真实登录的落盘行为"""
 
-    def __init__(self, cookies_file, calls: list | None = None):
+    def __init__(
+        self,
+        cookies_file,
+        calls: list | None = None,
+        apabi_host: str | None = None,
+    ):
         self.cookies_file = cookies_file
         self.calls = calls if calls is not None else []
+        self.apabi_host = apabi_host
 
     def can_login(self) -> bool:
         return True
@@ -53,7 +58,7 @@ class _FakeLogin:
     async def login(self) -> None:
         self.calls.append("login")
         await asyncio.sleep(0)  # 让并发调用真正交错
-        _write_cookies(self.cookies_file, "new")
+        _write_cookies(self.cookies_file, "new", self.apabi_host)
 
 
 class _NoNotify:
@@ -86,6 +91,50 @@ def test_relogin_reloads_cookies(tmp_path):
     assert "vpn358_sid=new" in auth.cookie_header(
         "https://apabi--com.elib.zyproxy.zjlib.cn/zjlib/"
     )
+
+
+def test_legacy_dict_cookies_have_no_saved_proxy_host(tmp_path):
+    cookies_file = tmp_path / "cookies.json"
+    cookies_file.write_text(
+        json.dumps({"cookies": {"vpn358_sid": "old"}}), encoding="utf-8"
+    )
+
+    auth = AuthManager(cookies_file)
+
+    assert auth.apabi_host is None
+    assert auth.cookie_header() == "vpn358_sid=old"
+
+
+def test_login_saves_dynamic_proxy_host_with_cookies(tmp_path):
+    cookies_file = tmp_path / "cookies.json"
+    login = SsoLogin(tmp_path / "credentials.json", cookies_file)
+
+    class _Context:
+        def cookies(self):
+            return COOKIES
+
+    result = login._save_cookies(
+        _Context(), f"https://{DYNAMIC_HOST}/zjlib/?pid=newspaper.index"
+    )
+
+    assert result == COOKIES
+    saved = json.loads(cookies_file.read_text(encoding="utf-8"))
+    assert saved == {"cookies": COOKIES, "apabi_host": DYNAMIC_HOST}
+    assert AuthManager(cookies_file).apabi_host == DYNAMIC_HOST
+
+
+def test_relogin_reloads_dynamic_proxy_host(tmp_path):
+    cookies_file = tmp_path / "cookies.json"
+    _write_cookies(cookies_file, apabi_host=DYNAMIC_HOST)
+    auth = AuthManager(
+        cookies_file, _FakeLogin(cookies_file, apabi_host=NEXT_DYNAMIC_HOST)
+    )
+
+    async def scenario():
+        assert await auth.relogin(auth.generation) is True
+
+    asyncio.run(scenario())
+    assert auth.apabi_host == NEXT_DYNAMIC_HOST
 
 
 def test_concurrent_relogin_logs_in_once(tmp_path):
@@ -178,19 +227,28 @@ class _FakeSession:
 
     def __init__(self, auth: "_FakeAuth"):
         self.auth = auth
+        self.urls: list[str] = []
 
     def get(self, url: str, **kwargs) -> _RespCM:
+        self.urls.append(url)
         if self.auth.valid:
             return _RespCM(_Resp("正文内容", login=False))
         return _RespCM(_Resp("", login=True))
 
 
 class _FakeAuth:
-    def __init__(self, relogin_result: bool = True):
+    def __init__(
+        self,
+        relogin_result: bool = True,
+        apabi_host: str | None = None,
+        relogin_host: str | None = None,
+    ):
         self.generation = 0
         self.valid = False
         self.login_calls = 0
         self.relogin_result = relogin_result
+        self.apabi_host = apabi_host
+        self.relogin_host = relogin_host
 
     def cookie_header(self, url: str = "") -> str:
         return "vpn358_sid=ok" if self.valid else "vpn358_sid=expired"
@@ -206,6 +264,8 @@ class _FakeAuth:
             return False
         self.valid = True
         self.generation += 1
+        if self.relogin_host:
+            self.apabi_host = self.relogin_host
         return True
 
 
@@ -231,6 +291,71 @@ def test_get_relogins_then_succeeds():
     assert asyncio.run(scenario()) == "正文内容"
     assert auth.login_calls == 1
     assert notifier.messages == []
+
+
+def test_get_uses_saved_dynamic_proxy_host():
+    auth = _FakeAuth(apabi_host=DYNAMIC_HOST)
+    auth.valid = True
+    client = _client(auth, _NoNotify())
+    url = "https://apabi--com.elib.zyproxy.zjlib.cn/zjlib/?pid=newspaper.issue"
+
+    assert asyncio.run(client.get(url)) == "正文内容"
+    assert client._session.urls == [
+        f"https://{DYNAMIC_HOST}/zjlib/?pid=newspaper.issue"
+    ]
+
+
+def test_relogin_switches_current_retry_to_new_proxy_host():
+    auth = _FakeAuth(
+        apabi_host=DYNAMIC_HOST,
+        relogin_host=NEXT_DYNAMIC_HOST,
+    )
+    client = _client(auth, _NoNotify())
+    url = "https://apabi--com.elib.zyproxy.zjlib.cn/zjlib/?pid=newspaper.issue"
+
+    assert asyncio.run(client.get(url)) == "正文内容"
+    assert client._session.urls == [
+        f"https://{DYNAMIC_HOST}/zjlib/?pid=newspaper.issue",
+        f"https://{NEXT_DYNAMIC_HOST}/zjlib/?pid=newspaper.issue",
+    ]
+
+
+def test_download_uses_saved_dynamic_proxy_host(tmp_path):
+    class _BinaryResp:
+        status = 200
+
+        async def read(self):
+            return b"image"
+
+    class _DownloadSession:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, **kwargs):
+            self.urls.append(url)
+            return _RespCM(_BinaryResp())
+
+    auth = _FakeAuth(apabi_host=DYNAMIC_HOST)
+    client = HttpClient(auth, _NoNotify())
+    session = _DownloadSession()
+    client._session = session
+    save_path = tmp_path / "image.jpg"
+    url = (
+        "https://http-img--enews--apabi--com.elib.zyproxy.zjlib.cn/"
+        "D330100hzrb/cnml.files/a.resbrief.1.jpg"
+    )
+
+    async def scenario():
+        assert await client.download(url, save_path) is True
+
+    asyncio.run(scenario())
+    assert session.urls == [
+        (
+            "https://http-img--enews--apabi--com-s-553.elib.zyproxy.zjlib.cn/"
+            "D330100hzrb/cnml.files/a.resbrief.1.jpg"
+        )
+    ]
+    assert save_path.read_bytes() == b"image"
 
 
 def test_get_raises_when_relogin_blocked():

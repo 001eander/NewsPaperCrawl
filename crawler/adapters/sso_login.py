@@ -25,14 +25,13 @@ OCR 或第三方识别服务。
 import asyncio
 import json
 import logging
-import re
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
 from ..domain.exceptions import LoginError
+from .apabi_proxy import apabi_host_from_url, is_apabi_url
 from .config import Settings
 
 logger = logging.getLogger(__name__)
@@ -50,9 +49,6 @@ SHARE_URL = (
 RESOURCE_NAME = "方正数字报"
 # SSO 登录页 URL 特征
 LOGIN_URL_MARKER = "sso/login"
-# apabi(方正数字报)代理域主机名特征
-APABI_HOST = "apabi--com.elib.zyproxy.zjlib.cn"
-APABI_DYNAMIC_HOST = re.compile(r"apabi--com-s-\d+\.elib\.zyproxy\.zjlib\.cn")
 # 登录后要确认的关键会话 cookie
 VPN_COOKIE = "vpn358_sid"
 # 轮询关键会话 cookie 的超时与间隔(秒)
@@ -106,8 +102,7 @@ def _select_province_and_library(page) -> None:
 
 
 def _is_apabi_url(url: str) -> bool:
-    hostname = urlsplit(url).hostname or ""
-    return hostname == APABI_HOST or APABI_DYNAMIC_HOST.fullmatch(hostname) is not None
+    return is_apabi_url(url)
 
 
 def _is_fangzheng_url(url: str) -> bool:
@@ -327,7 +322,7 @@ class SsoLogin:
                 logger.info("[2/6] 已登录,新标签页直接进入方正数字报")
                 logger.info("[6/6] 已进入方正数字报")
 
-            return self._save_cookies(ctx)
+            return self._save_cookies(ctx, apabi_page.url or "")
         finally:
             browser.close()
 
@@ -347,7 +342,7 @@ class SsoLogin:
             logger.info("  登录被拒: %s;重新读取验证码后重试...", err)
         return None
 
-    def _save_cookies(self, ctx) -> list[dict]:
+    def _save_cookies(self, ctx, apabi_url: str = "") -> list[dict]:
         # 登录成功后 vpn358_sid 才是可用凭据,轮询到它再保存:比等固定时长更快,
         # 也不会把尚未落定的会话存下来
         if _wait_for_cookie(ctx, VPN_COOKIE, COOKIE_WAIT_TIMEOUT):
@@ -362,9 +357,14 @@ class SsoLogin:
             {"name": c["name"], "value": c["value"], "domain": c["domain"]}
             for c in ctx.cookies()
         ]
+        session_data: dict[str, object] = {"cookies": payload}
+        apabi_host = apabi_host_from_url(apabi_url)
+        if apabi_host:
+            session_data["apabi_host"] = apabi_host
+            logger.info("当前 APABI 代理域: %s", apabi_host)
         self.cookies_file.parent.mkdir(parents=True, exist_ok=True)
         self.cookies_file.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(session_data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         if VPN_COOKIE in {c["name"] for c in payload}:
             logger.info(

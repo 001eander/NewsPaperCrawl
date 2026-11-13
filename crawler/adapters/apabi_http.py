@@ -18,6 +18,7 @@ import aiohttp
 from ..domain.exceptions import AuthError, LoginError
 from ..ports.auth import AuthProvider
 from ..ports.notifier import Notifier
+from .apabi_proxy import rewrite_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -85,35 +86,42 @@ class HttpClient:
         net_attempts = 0
         auth_hits = 0
         while True:
-            # 自动登录会改写 cookies.json,每次尝试都重新拼 Cookie
-            headers["Cookie"] = self.auth.cookie_header(url)
+            # 自动登录会同时刷新 cookie 与代理域,每次尝试都取当前会话状态
+            request_url = rewrite_proxy_url(url, self.auth.apabi_host)
+            headers["Cookie"] = self.auth.cookie_header(request_url)
             login_hit = False
             async with self._sem:
                 try:
                     async with self._session.get(
-                        url, headers=headers, **kwargs
+                        request_url, headers=headers, **kwargs
                     ) as resp:
                         if resp.status == 404:
                             return ""
                         # 认证检测①: 被重定向到登录域(cookie 过期 → 302 -> login.xxx)
                         if _redirected_to_login(resp):
                             login_hit = True
-                            last_err = AuthError(f"认证失效于 {url}(被重定向到登录页)")
+                            last_err = AuthError(
+                                f"认证失效于 {request_url}(被重定向到登录页)"
+                            )
                         else:
                             text = await resp.text()
                             # 认证检测②: 响应内容呈现登录页(兜底)
                             if self.auth.is_auth_fail(text):
                                 login_hit = True
-                                last_err = AuthError(f"认证失效于 {url}")
+                                last_err = AuthError(f"认证失效于 {request_url}")
                             elif resp.status >= 400:
-                                raise RuntimeError(f"HTTP {resp.status} for {url}")
+                                raise RuntimeError(
+                                    f"HTTP {resp.status} for {request_url}"
+                                )
                             else:
                                 return text
                 except AuthError:
                     raise
                 except Exception as e:  # noqa: BLE001
                     last_err = e
-                    logger.debug("第 %s 次请求失败 %s: %s", net_attempts + 1, url, e)
+                    logger.debug(
+                        "第 %s 次请求失败 %s: %s", net_attempts + 1, request_url, e
+                    )
             if login_hit:
                 auth_hits += 1
                 if auth_hits >= self.auth_retries:
@@ -157,13 +165,16 @@ class HttpClient:
             )
         }
         for attempt in range(self.retries):
+            request_url = rewrite_proxy_url(url, self.auth.apabi_host)
             async with self._img_sem:
                 try:
                     # 图片请求用短超时:CDN 上偶发挂起/缓慢的图若按正文 30s 超时,
                     # 重试 3 次会拖到 96s+,成为整批长尾。15s 足够下载正常图片。
                     # 图片走独立低并发信号量,靠并发数保护 CDN。
                     async with self._session.get(
-                        url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
+                        request_url,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=15),
                     ) as resp:
                         if resp.status == 404:
                             return False
@@ -173,7 +184,7 @@ class HttpClient:
                         save_path.write_bytes(data)
                         return True
                 except Exception as e:  # noqa: BLE001
-                    logger.debug("下载失败 %s 第%s次: %s", url, attempt + 1, e)
+                    logger.debug("下载失败 %s 第%s次: %s", request_url, attempt + 1, e)
                     await asyncio.sleep(2**attempt)
         return False
 
